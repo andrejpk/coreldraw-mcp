@@ -1,9 +1,10 @@
 """Inspect drawing objects and bridge exact IDs to CorelDRAW UI selection."""
 
 from core.connection import get_connection
-from core.drawing import CDR_GROUP_SHAPE, walk_shapes
+from core.drawing import (
+    CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_REGISTRATION, CDR_COLOR_RGB, CDR_GROUP_SHAPE, walk_shapes,
+)
 from core.models import ToolResult
-from tools.colors import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_REGISTRATION, CDR_COLOR_RGB
 from tools.document import _scoped_document, _scoped_page
 from tools.shapes import _create_shape_range, _static_id
 
@@ -160,6 +161,19 @@ def select_shapes_by_id(document_path: str, page_index: int, shape_ids: list[str
 
 
 def _on_shape(document_path, page_index, shape_id, action, *, write=False) -> ToolResult:
+    def one(app, doc, shapes):
+        return {"shape_id": shape_id, **action(app, doc, shapes[0])}
+
+    return _on_shapes(document_path, page_index, [shape_id], one, write=write)
+
+
+def _require_editable(shape, page_index):
+    layer = shape.Layer
+    if layer.Master or layer.IsSpecialLayer or layer.Page.Index != page_index or not layer.Editable:
+        raise ValueError("The shape must be on an editable, ordinary layer local to the requested page")
+
+
+def _on_shapes(document_path, page_index, shape_ids, action, *, write=False) -> ToolResult:
     conn = get_connection()
     if not conn.status.connected:
         return ToolResult.fail("CorelDRAW is not connected")
@@ -167,14 +181,13 @@ def _on_shape(document_path, page_index, shape_id, action, *, write=False) -> To
     def run():
         doc, actual_path = _scoped_document(conn.app, document_path)
         page = _scoped_page(doc, page_index)
-        shape, = _exact_shapes(page, [shape_id])
+        shapes = _exact_shapes(page, shape_ids)
         if write:
-            layer = shape.Layer
-            if layer.Master or layer.IsSpecialLayer or layer.Page.Index != page_index or not layer.Editable:
-                raise ValueError("The shape must be on an editable, ordinary layer local to the requested page")
+            for shape in shapes:
+                _require_editable(shape, page_index)
         return {
-            "document_path": actual_path, "page_index": page_index, "shape_id": shape_id,
-            **action(conn.app, doc, shape),
+            "document_path": actual_path, "page_index": page_index,
+            **action(conn.app, doc, shapes),
         }
 
     # A failed readback after a COM mutation leaves its outcome uncertain.

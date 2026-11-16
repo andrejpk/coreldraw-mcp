@@ -6,6 +6,11 @@ CDR_BITMAP_SHAPE = 5
 CDR_TEXT_SHAPE = 6
 CDR_GROUP_SHAPE = 7
 
+CDR_COLOR_PANTONE = 1
+CDR_COLOR_CMYK = 2
+CDR_COLOR_RGB = 5
+CDR_COLOR_REGISTRATION = 20
+
 
 def walk_shapes(shapes, parent_id=None):
     for shape in shapes:

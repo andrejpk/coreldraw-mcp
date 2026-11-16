@@ -1,14 +1,71 @@
 """颜色与填充工具 — CMYK/RGB/Pantone 填充、描边、颜色检查"""
 
 from core.connection import get_connection
+from core.drawing import CDR_COLOR_RGB, CDR_GROUP_SHAPE
 from core.models import ToolResult
+from tools.inspection import _CDR_NO_FILL, _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shapes
 
 _CDR_TEXT_SHAPE = 6
-CDR_COLOR_PANTONE = 1
-CDR_COLOR_CMYK = 2
-CDR_COLOR_RGB = 5
-CDR_COLOR_REGISTRATION = 20
 _FILL_MAP = {"cmyk": 0, "rgb": 1, "pantone": 2}
+
+
+def copy_shape_fill(
+    document_path: str, page_index: int, source_shape_id: str, target_shape_ids: list[str],
+) -> ToolResult:
+    """Copy a uniform fill from one exact shape to exact unfilled or uniform-fill targets.
+
+    Copies the native CorelDRAW color, including a spot ink and its tint, and reads it back.
+    Any group must be resolved to its individual target shapes first.
+    """
+    if source_shape_id in target_shape_ids:
+        return ToolResult.fail("The donor cannot also be a target")
+
+    def copy(app, doc, targets):
+        donor, = _exact_shapes(doc.Pages(page_index), [source_shape_id])
+        if donor.Fill.Type != _CDR_UNIFORM_FILL:
+            raise ValueError("The donor must have a uniform fill")
+        color = donor.Fill.UniformColor.GetCopy()
+        expected = _color_details(color)
+        if expected["kind"] == "spot":
+            expected["tint"] = color.Tint
+        originals = []
+        for target in targets:
+            fill = target.Fill
+            if target.Type == CDR_GROUP_SHAPE or fill.Type not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL):
+                raise ValueError("Each target must be an individual shape with no fill or a uniform fill")
+            originals.append(fill.UniformColor.GetCopy() if fill.Type == _CDR_UNIFORM_FILL else None)
+
+        changed, observed = [], {}
+        doc.BeginCommandGroup("Copy uniform fill")
+        try:
+            for shape_id, target, original in zip(target_shape_ids, targets, originals, strict=True):
+                changed.append((shape_id, target, original))
+                target.Fill.ApplyUniformFill(color)
+                actual = target.Fill.UniformColor
+                details = _color_details(actual)
+                if details["kind"] == "spot":
+                    details["tint"] = actual.Tint
+                if not actual.IsSame(color) or details != expected:
+                    raise RuntimeError(f"Color readback differs for target {shape_id}")
+                observed[shape_id] = details
+        except Exception as exc:
+            failed = []
+            for shape_id, target, original in reversed(changed):
+                try:
+                    if original is None:
+                        target.Fill.ApplyNoFill()
+                    else:
+                        target.Fill.ApplyUniformFill(original)
+                except Exception:
+                    failed.append(shape_id)
+            if failed:
+                raise RuntimeError(f"{exc}. Verify fill restoration for IDs: {failed}") from exc
+            raise
+        finally:
+            doc.EndCommandGroup()
+        return {"source_shape_id": source_shape_id, "source_color": expected, "target_colors": observed}
+
+    return _on_shapes(document_path, page_index, target_shape_ids, copy, write=True)
 
 
 def _find_shape(shape_id: str):

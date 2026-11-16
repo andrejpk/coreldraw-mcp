@@ -1,9 +1,8 @@
 """印前质检工具 — 尺寸校验、文字溢出、缺失字体、色彩报告"""
 
 from core.connection import get_connection
-from core.drawing import CDR_TEXT_SHAPE
+from core.drawing import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB, CDR_TEXT_SHAPE
 from core.models import ToolResult
-from tools.colors import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB
 
 _CDR_PARAGRAPH_TEXT = 1
 _CDR_MILLIMETER = 3
