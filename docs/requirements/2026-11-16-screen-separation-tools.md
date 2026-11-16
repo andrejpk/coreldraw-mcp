@@ -14,6 +14,12 @@ Production handoff, 2026-11-16. The priorities below are proposed for review. Ke
 
 The production workflow motivating the contour operations uses the White Underbase preset, an inward 0.75 pt offset, and overprint fill on the resulting white shapes after breaking apart. Preset, ink, and offset come from the workflow. Treating beige as white, choosing mesh, and setting registration-mark spacing also belong in the skill.
 
+### CorelDRAW 2022 verification
+
+- A disposable two-page document confirmed recursive inspection of a grouped process-color outline, selection by child ID, and independent printability for same-named layers on different pages.
+- A disposable contour test confirmed a 0.75 pt inward contour, copying an existing object's uniform fill, separation with returned leaf IDs, and fill overprint on the result with the source and outline flags preserved.
+- Inspection of the installed COM type library found contour effect interfaces and parameters but no native preset list or apply member. Use CorelDRAW's preset UI when the named preset is needed. MCP accepts explicit contour parameters and can use an existing object's uniform fill.
+
 ## Candidates to investigate
 
 - **Geometry anchors and units.** `set_shape_position` documents millimeters and calls `SetPosition` directly. Verify anchor, coordinate system, unit conversion, and readback on pages with different document units and reference points.

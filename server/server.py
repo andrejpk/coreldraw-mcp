@@ -35,7 +35,7 @@ def setup_logging():
 
 
 def register_tools():
-    from tools import document, shapes, text, colors, layers, export, preflight, data_merge, templates, engineering, inspection
+    from tools import colors, data_merge, document, effects, engineering, export, inspection, layers, preflight, shapes, templates, text
 
     mcp.add_tool(document.open_template)
     mcp.add_tool(document.create_document)
@@ -72,6 +72,11 @@ def register_tools():
     mcp.add_tool(inspection.inspect_shapes)
     mcp.add_tool(inspection.get_ui_selection)
     mcp.add_tool(inspection.select_shapes_by_id)
+    mcp.add_tool(effects.inspect_contours)
+    mcp.add_tool(effects.apply_contour)
+    mcp.add_tool(effects.break_contour_apart)
+    mcp.add_tool(effects.get_shape_overprint)
+    mcp.add_tool(effects.set_shape_overprint)
 
     mcp.add_tool(text.set_text_content)
     mcp.add_tool(text.set_text_style)

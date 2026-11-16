@@ -161,15 +161,16 @@ class CorelDrawConnection:
         except Exception:
             return False
 
-    def safe_call(self, func, *args, **kwargs):
+    def safe_call(self, func, *args, max_attempts=None, **kwargs):
+        attempts = self.config.max_retries if max_attempts is None else max_attempts
         last_error = None
-        for attempt in range(self.config.max_retries):
+        for attempt in range(attempts):
             try:
                 result = self._com_thread.call(func, *args, timeout=60.0, **kwargs)
                 return {"success": True, "result": result}
             except Exception as e:
                 last_error = str(e)
-                if attempt < self.config.max_retries - 1 and self.config.reconnect_on_failure:
+                if attempt < attempts - 1 and self.config.reconnect_on_failure:
                     if not self.reconnect():
                         break
         return {"success": False, "result": None, "error": last_error or "Unknown error"}
