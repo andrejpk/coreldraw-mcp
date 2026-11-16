@@ -57,15 +57,6 @@ def _prepare_current_page_export(doc) -> int:
         page.Activate()
     except Exception:
         pass
-    try:
-        for layer in page.Layers:
-            for attr in ("Visible", "Printable"):
-                try:
-                    setattr(layer, attr, True)
-                except Exception:
-                    pass
-    except Exception:
-        pass
     return shapes_count
 
 
