@@ -23,10 +23,10 @@ The production workflow motivating the contour operations uses the White Underba
 ## Candidates to investigate
 
 - **Geometry anchors and units.** `set_shape_position` documents millimeters and calls `SetPosition` directly. Verify anchor, coordinate system, unit conversion, and readback on pages with different document units and reference points.
-- **New document from a CDT.** Verify the CorelDRAW template creation path. `open_template` calls `OpenDocument`; the desired outcome is a new document based on the CDT with the original template preserved.
+- **New document from a CDT.** CorelDRAW 2022 exposes `Application.CreateDocumentFromTemplate`. Verify with a disposable CDT that it creates a separate unsaved drawing with graphics and the intended page structure, and that saving a new CDR leaves the source CDT intact. `open_template` currently calls `OpenDocument`.
 - **Grouped edits.** Evaluate one undo group with exact target and result IDs and observed state after each operation. Test rollback after a partial failure separately from grouping edits for undo.
 - **Per-page plates and previews.** `get_print_separation_settings` reads the configured printer, range, and available plates, which can include unused inks. The installed CorelDRAW 2022 COM type library exposes no rendered print-preview image or per-page nonblank plate list. `export_page_proof_pdf` publishes one page with native spots and overprint instructions for independent verification. `server/render_separation_proof.py` runs Ghostscript `tiffsep` to produce a composite, each plate mask, and a manifest. PDF proof does not validate printer clipping, RIP settings, or physical output. Inspect any registration-only marks reported on other plates before deciding whether an ink is unexpected.
-- **Exact transfer between documents.** Investigate copying specified vector objects into a specified destination page and layer while preserving native fills, outlines, groups, and overprint flags. Validate separate document paths and provide new destination IDs. Avoid clipboard state for this operation.
+- **Exact transfer between documents.** Probe `Shape.CopyToLayer` with separate disposable source and destination documents. The SDK documents a destination layer without establishing cross-document behavior. Verify preserved native fills, outlines, groups, z-order, and overprint flags, and return destination IDs. If cross-document copy is unsupported, investigate a temporary native CDR import path without using clipboard state.
 
 ## Validation
 

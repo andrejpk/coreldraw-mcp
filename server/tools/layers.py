@@ -213,11 +213,14 @@ def get_page_layers(document_path: str, page_index: int) -> ToolResult:
 
 def set_page_layer_state(
     document_path: str, page_index: int, layer_name: str, property_name: str, value: bool,
+    allow_page_guides: bool = False,
 ) -> ToolResult:
     """Set one flag (visible, editable, or printable) on an exact page-local layer and read back all flags.
 
     document_path must match the active saved file, page_index is one-based, and layer_name
-    must match exactly. Shared and special layers are excluded. editable=True unlocks the layer.
+    must match exactly. editable=True unlocks the layer. Set allow_page_guides=True
+    to change printable on CorelDRAW's guideline layer for this page. Shared layers,
+    desktop/grid layers, and other edits to special layers are excluded.
     """
     conn = get_connection()
     if not conn.status.connected:
@@ -232,8 +235,10 @@ def set_page_layer_state(
         if len(matches) != 1:
             raise ValueError(f"Expected exactly one layer named {layer_name!r} on page {page_index}")
         layer = matches[0]
-        if layer.Master or layer.IsSpecialLayer or layer.Page.Index != page_index:
-            raise ValueError("Only ordinary page-local layers can be changed by this tool")
+        if layer.Master or layer.Page.Index != page_index:
+            raise ValueError("Only layers local to the requested page can be changed")
+        if layer.IsSpecialLayer and not (allow_page_guides and property_name == "printable" and layer.IsGuidesLayer):
+            raise ValueError("Special layers are excluded except for explicitly permitted page-guide printability")
         setattr(layer, _LAYER_PROPERTIES[property_name], value)
         return {"document_path": actual_path, "page_index": page_index, "layer": _layer_state(layer)}
 
