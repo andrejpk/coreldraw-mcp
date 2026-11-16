@@ -1,9 +1,10 @@
 """文字处理工具 — 替换文字内容、样式设置、溢出检查、创建文本框"""
 
 from core.connection import get_connection
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from tools.inspection import _on_shape
 
-_CDR_TEXT_SHAPE = 3
 _CDR_PARAGRAPH_TEXT = 1
 _CDR_MILLIMETER = 3
 _ALIGNMENT_MAP = {"left": 0, "center": 3, "right": 1, "none": 0}
@@ -31,7 +32,7 @@ def _find_text_shape(shape_id: str):
             else:
                 return None
         try:
-            if shape.Type == _CDR_TEXT_SHAPE:
+            if shape.Type == CDR_TEXT_SHAPE:
                 return shape
         except Exception:
             pass
@@ -62,6 +63,7 @@ def _get_text_content(text) -> str:
 
 def _set_text_content(text, content: str) -> None:
     for setter in (
+        lambda: setattr(text.Story, "Text", content),
         lambda: setattr(text, "Contents", content),
         lambda: text.SetContents(2, content),
         lambda: setattr(text, "Story", content),
@@ -72,6 +74,21 @@ def _set_text_content(text, content: str) -> None:
         except Exception:
             continue
     raise RuntimeError("当前 CorelDRAW 版本不支持已知的文字内容写入 API")
+
+
+def set_text_content_by_id(document_path: str, page_index: int, shape_id: str, content: str) -> ToolResult:
+    """Replace an exact editable text story and return the actual text read back from CorelDRAW."""
+    def replace(app, doc, shape):
+        if shape.Type != CDR_TEXT_SHAPE:
+            raise ValueError("The specified shape is not editable text")
+        shape.Text.Story.Text = content
+        actual = shape.Text.Story.Text
+        data = {"content": actual}
+        if actual != content:
+            data["verification_error"] = "CorelDRAW text differs from the requested content"
+        return data
+
+    return _on_shape(document_path, page_index, shape_id, replace, write=True)
 
 
 def _set_text_font(text, font: str) -> None:

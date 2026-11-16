@@ -3,10 +3,10 @@
 import math
 from typing import Literal
 
-from core.connection import get_connection
+from core.drawing import CDR_GROUP_SHAPE
 from core.models import ToolResult
-from tools.document import _UNIT_MAP, _scoped_document, _scoped_page
-from tools.inspection import _CDR_GROUP_SHAPE, _CDR_UNIFORM_FILL, _color_details, _exact_shapes
+from tools.document import _UNIT_MAP, _scoped_page
+from tools.inspection import _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shape
 from tools.shapes import _static_id
 
 _CDR_CONTOUR = 6
@@ -15,34 +15,6 @@ _CDR_TENTH_MICRON = 0
 _CONTOUR_DIRECTIONS = {"inside": 0, "outside": 1, "to_center": 2}
 _DIRECTION_NAMES = {value: name for name, value in _CONTOUR_DIRECTIONS.items()}
 _OVERPRINT_PROPERTIES = {"fill": "OverprintFill", "outline": "OverprintOutline"}
-
-
-def _on_shape(document_path, page_index, shape_id, action, *, write=False) -> ToolResult:
-    conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
-
-    def run():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
-        shape, = _exact_shapes(page, [shape_id])
-        if write:
-            layer = shape.Layer
-            if layer.Master or layer.IsSpecialLayer or layer.Page.Index != page_index or not layer.Editable:
-                raise ValueError("The shape must be on an editable, ordinary layer local to the requested page")
-        return {
-            "document_path": actual_path, "page_index": page_index, "shape_id": shape_id,
-            **action(conn.app, doc, shape),
-        }
-
-    # A failed readback after a COM mutation leaves its outcome uncertain.
-    result = conn.safe_call(run, max_attempts=1 if write else None)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if error := data.pop("verification_error", None):
-        return ToolResult(success=False, error=error, data=data)
-    return ToolResult.ok(**data)
 
 
 def _overprint_flags(shape):
@@ -62,7 +34,7 @@ def set_shape_overprint(
         return ToolResult.fail("part must be fill or outline")
 
     def set_flag(app, doc, shape):
-        if shape.Type == _CDR_GROUP_SHAPE:
+        if shape.Type == CDR_GROUP_SHAPE:
             raise ValueError("Use the exact ID of a child shape to change its overprint flag")
         expected = _overprint_flags(shape)
         expected[part] = enabled
@@ -161,7 +133,7 @@ def break_contour_apart(document_path: str, page_index: int, shape_id: str) -> T
 
 
 def _leaf_ids(shape):
-    if shape.Type == _CDR_GROUP_SHAPE:
+    if shape.Type == CDR_GROUP_SHAPE:
         for child in shape.Shapes:
             yield from _leaf_ids(child)
     else:

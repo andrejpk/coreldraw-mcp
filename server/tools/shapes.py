@@ -1,6 +1,7 @@
 """图形操作工具 — 创建/查找/修改形状，布尔运算，导入素材，对齐/分布/层级/旋转/缩放"""
 
 from core.connection import get_connection
+from core.drawing import CDR_BITMAP_SHAPE, CDR_CURVE_SHAPE, CDR_GROUP_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE
 from core.models import ToolResult
 
 
@@ -696,8 +697,8 @@ def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = 
         return ToolResult.fail("CorelDRAW 未连接")
 
     _TYPE_MAP = {
-        "rectangle": 1, "ellipse": 2, "curve": 4, "text": 3,
-        "bitmap": 6, "group": 7, "line": 1, "polygon": 5,
+        "rectangle": 1, "ellipse": 2, "curve": CDR_CURVE_SHAPE, "text": CDR_TEXT_SHAPE,
+        "bitmap": CDR_BITMAP_SHAPE, "group": CDR_GROUP_SHAPE, "line": 1, "polygon": CDR_POLYGON_SHAPE,
     }
 
     def _select():

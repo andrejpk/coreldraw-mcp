@@ -3,9 +3,9 @@
 import os
 
 from core.connection import get_connection
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
 
-_CDR_TEXT_SHAPE = 3
 
 
 def populate_title_block(
@@ -54,7 +54,7 @@ def populate_title_block(
 
         for s in page.Shapes:
             try:
-                if s.Type == _CDR_TEXT_SHAPE and s.Name in fields:
+                if s.Type == CDR_TEXT_SHAPE and s.Name in fields:
                     s.Text.Story = str(fields[s.Name])
                     replaced[s.Name] = str(fields[s.Name])
             except Exception:
@@ -66,7 +66,7 @@ def populate_title_block(
                 continue
             try:
                 for s in pg.Shapes:
-                    if s.Type == _CDR_TEXT_SHAPE and s.Name in fields and s.Name not in replaced:
+                    if s.Type == CDR_TEXT_SHAPE and s.Name in fields and s.Name not in replaced:
                         try:
                             s.Text.Story = str(fields[s.Name])
                             replaced[s.Name] = str(fields[s.Name])
@@ -139,7 +139,7 @@ def assemble_engineering_drawing(
         }
         for s in page.Shapes:
             try:
-                if s.Type == _CDR_TEXT_SHAPE and s.Name in field_map and field_map[s.Name]:
+                if s.Type == CDR_TEXT_SHAPE and s.Name in field_map and field_map[s.Name]:
                     s.Text.Story = str(field_map[s.Name])
                     replaced_fields[s.Name] = field_map[s.Name]
             except Exception:

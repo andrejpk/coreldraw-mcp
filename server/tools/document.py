@@ -3,6 +3,7 @@
 import ntpath
 
 from core.connection import get_connection
+from core.drawing import CDR_TEXT_SHAPE, walk_shapes
 from core.models import ToolResult
 
 _CDR_MILLIMETER = 3
@@ -196,7 +197,7 @@ def get_document_info() -> ToolResult:
             shapes = page.Shapes
             shapes_count = shapes.Count
             for s in shapes:
-                if s.Type == 3:  # cdrTextShape
+                if s.Type == CDR_TEXT_SHAPE:  # cdrTextShape
                     text_shapes += 1
         except Exception:
             pass
@@ -231,83 +232,60 @@ def get_document_info() -> ToolResult:
     return ToolResult.fail(result.get("error", "获取文档信息失败"))
 
 
-def list_all_text_shapes(page_index: int = 0, content_preview_len: int = 40) -> ToolResult:
-    """列出当前文档指定页面的所有文字形状。
-    返回每个形状的 name、shape_id、text_type（artistic/paragraph/curve）、
-    writable（是否可通过 set_text_content 写入）、content_preview，
-    以及位置和尺寸（x、y、width、height，单位 mm）。
-    page_index=0 表示当前页，其他值为页码（从 1 起）。
-    用于在批量合并前确认标题栏/占位符形状的真实 ID、位置和可写状态。
+def list_all_text_shapes(
+    page_index: int = 0, content_preview_len: int = 40, document_path: str = "",
+) -> ToolResult:
+    """List editable CorelDRAW text shapes on a page, including nested groups.
+
+    Use a one-based page index or 0 for the active page. When supplied, document_path
+    must match the saved active file. Coordinates and sizes are in document units.
+    Converted curves have no editable story and are excluded.
     """
     conn = get_connection()
     if not conn.status.connected:
         return ToolResult.fail("CorelDRAW 未连接")
+    if content_preview_len < 0:
+        return ToolResult.fail("content_preview_len must be nonnegative")
 
     def _list():
-        doc = conn.app.ActiveDocument
+        doc = _scoped_document(conn.app, document_path)[0] if document_path else conn.app.ActiveDocument
         if not doc:
             raise RuntimeError("没有打开的文档")
-        if page_index == 0:
-            page = doc.ActivePage
-        else:
-            page = _get_page(doc, page_index)
+        page = doc.ActivePage if page_index == 0 else _scoped_page(doc, page_index)
 
         items = []
-        for s in page.Shapes:
-            # 判断是否文字形状：Type==3 快速路径，失败则 duck-typing
-            is_text = False
-            try:
-                is_text = s.Type == 3
-            except Exception:
-                pass
-            if not is_text:
-                try:
-                    _ = s.Text.Story
-                    is_text = True
-                except Exception:
-                    pass
-            if not is_text:
+        for shape, parent_id in walk_shapes(page.Shapes):
+            if shape.Type != CDR_TEXT_SHAPE:
                 continue
-
-            item = {"name": "", "shape_id": "", "text_type": "unknown",
-                    "writable": False, "content_preview": "",
-                    "x": 0.0, "y": 0.0, "width": 0.0, "height": 0.0}
+            item = {
+                "shape_id": str(shape.StaticID), "parent_id": parent_id, "name": shape.Name or "",
+                "x": shape.PositionX, "y": shape.PositionY, "width": shape.SizeWidth, "height": shape.SizeHeight,
+                "writable": False, "text_type": "unknown", "content_preview": "",
+            }
             try:
-                item["name"] = s.Name or ""
-            except Exception:
-                pass
-            try:
-                item["shape_id"] = str(s.StaticID)
-            except Exception:
-                pass
-            try:
-                item["x"] = round(s.PositionX, 2)
-                item["y"] = round(s.PositionY, 2)
-                item["width"] = round(s.SizeWidth, 2)
-                item["height"] = round(s.SizeHeight, 2)
-            except Exception:
-                pass
-
-            # 区分美术字 / 段落文字 / 已转曲
-            try:
-                t = s.Text
-                story = t.Story
+                frame = shape.Text
+                story = frame.Story
+                content = story.Text
+                item["content_preview"] = content[:content_preview_len]
+                if len(content) > content_preview_len:
+                    item["content_preview"] += "…"
+                text_type = frame.Type
+                if text_type in (0, 1, 2, 3):
+                    item["text_type"] = "paragraph" if text_type in (1, 3) else "artistic"
                 item["writable"] = True
-                item["content_preview"] = (story[:content_preview_len] + "…"
-                                           if len(story) > content_preview_len else story)
-                try:
-                    item["text_type"] = "paragraph" if t.Type == 1 else "artistic"
-                except Exception:
-                    item["text_type"] = "artistic"
-            except Exception:
-                item["text_type"] = "curve"  # 已转曲，不可写
-                item["writable"] = False
-
+                for prop in ("Font", "Size", "Bold", "Italic"):
+                    try:
+                        item[prop.lower()] = getattr(story, prop)
+                    except Exception:
+                        item[prop.lower()] = None
+            except Exception as exc:
+                item["read_error"] = str(exc)
             items.append(item)
 
-        writable = sum(1 for x in items if x["writable"])
-        return {"page": page.Index, "total": len(items),
-                "writable": writable, "shapes": items}
+        return {
+            "page": page.Index, "document_unit": doc.Unit, "total": len(items),
+            "writable": sum(item["writable"] for item in items), "shapes": items,
+        }
 
     result = conn.safe_call(_list)
     if result["success"]:

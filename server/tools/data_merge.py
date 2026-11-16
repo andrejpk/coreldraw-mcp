@@ -4,6 +4,7 @@ import os
 import tempfile
 
 from core.connection import get_connection
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
 
 
@@ -72,7 +73,7 @@ def merge_record(template_path: str, data: dict, output_path: str) -> ToolResult
                 shapes = page.Shapes
                 for s in shapes:
                     try:
-                        if s.Type == 3 and s.Name == key:  # cdrTextShape
+                        if s.Type == CDR_TEXT_SHAPE and s.Name == key:  # cdrTextShape
                             s.Text.Story = str(value)
                             replaced[key] = str(value)[:30]
                             break
@@ -96,8 +97,6 @@ def merge_record(template_path: str, data: dict, output_path: str) -> ToolResult
 
 def batch_merge(template_path: str, data_path: str, output_dir: str, naming_pattern: str = "{room}") -> ToolResult:
     """批量数据合并：从 Excel 读取数据，逐条生成文件。naming_pattern 支持 {col_name} 占位符。"""
-    from core.connection import get_connection
-
     conn = get_connection()
     if not conn.status.connected:
         return ToolResult.fail("CorelDRAW 未连接")

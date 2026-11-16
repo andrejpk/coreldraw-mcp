@@ -35,7 +35,10 @@ def setup_logging():
 
 
 def register_tools():
-    from tools import colors, data_merge, document, effects, engineering, export, inspection, layers, preflight, shapes, templates, text
+    from tools import (
+        colors, data_merge, document, effects, engineering, export, geometry,
+        inspection, layers, preflight, proof, shapes, templates, text,
+    )
 
     mcp.add_tool(document.open_template)
     mcp.add_tool(document.create_document)
@@ -77,8 +80,14 @@ def register_tools():
     mcp.add_tool(effects.break_contour_apart)
     mcp.add_tool(effects.get_shape_overprint)
     mcp.add_tool(effects.set_shape_overprint)
+    mcp.add_tool(geometry.set_shape_position_exact)
+    mcp.add_tool(geometry.duplicate_shape_by_id)
+    mcp.add_tool(proof.get_simulate_overprints)
+    mcp.add_tool(proof.set_simulate_overprints)
+    mcp.add_tool(proof.get_print_separation_settings)
 
     mcp.add_tool(text.set_text_content)
+    mcp.add_tool(text.set_text_content_by_id)
     mcp.add_tool(text.set_text_style)
     mcp.add_tool(text.fit_text_to_frame)
     mcp.add_tool(text.check_text_overflow)

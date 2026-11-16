@@ -1,10 +1,10 @@
 """印前质检工具 — 尺寸校验、文字溢出、缺失字体、色彩报告"""
 
 from core.connection import get_connection
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
 from tools.colors import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB
 
-_CDR_TEXT_SHAPE = 3
 _CDR_PARAGRAPH_TEXT = 1
 _CDR_MILLIMETER = 3
 
@@ -58,7 +58,7 @@ def check_text_overflow_all() -> ToolResult:
         total_text = 0
         try:
             for s in page.Shapes:
-                if s.Type == _CDR_TEXT_SHAPE:
+                if s.Type == CDR_TEXT_SHAPE:
                     total_text += 1
                     try:
                         if s.Text.Type == _CDR_PARAGRAPH_TEXT:
@@ -130,7 +130,7 @@ def check_missing_fonts() -> ToolResult:
         page = doc.ActivePage
         try:
             for s in page.Shapes:
-                if s.Type != _CDR_TEXT_SHAPE:
+                if s.Type != CDR_TEXT_SHAPE:
                     continue
                 # 收集形状使用的字体（字符级优先，形状级 fallback）
                 shape_fonts: set[str] = set()
