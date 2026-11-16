@@ -1,5 +1,7 @@
 """文档管理工具 — 打开模板、创建/保存/关闭文档、页面管理"""
 
+import ntpath
+
 from core.connection import get_connection
 from core.models import ToolResult
 
@@ -20,6 +22,25 @@ def _get_page_size(doc):
 def _get_page(doc, page_index: int):
     """Return a CorelDRAW page by 1-based index."""
     return doc.Pages(page_index)
+
+
+def _scoped_document(app, document_path: str):
+    """Match the active document without opening or changing it."""
+    if not ntpath.isabs(document_path):
+        raise ValueError("document_path must be an absolute Windows path")
+    doc = app.ActiveDocument
+    if not doc:
+        raise RuntimeError("CorelDRAW has no active document")
+    actual_path = ntpath.join(doc.FilePath, doc.FileName)
+    if ntpath.normcase(ntpath.normpath(actual_path)) != ntpath.normcase(ntpath.normpath(document_path)):
+        raise ValueError(f"Document mismatch: active document is {actual_path!r}")
+    return doc, actual_path
+
+
+def _scoped_page(doc, page_index: int):
+    if not 1 <= page_index <= doc.Pages.Count:
+        raise ValueError(f"page_index must be between 1 and {doc.Pages.Count}")
+    return _get_page(doc, page_index)
 
 
 def open_template(path: str) -> ToolResult:

@@ -35,7 +35,7 @@ def setup_logging():
 
 
 def register_tools():
-    from tools import document, shapes, text, colors, layers, export, preflight, data_merge, templates, engineering
+    from tools import document, shapes, text, colors, layers, export, preflight, data_merge, templates, engineering, inspection
 
     mcp.add_tool(document.open_template)
     mcp.add_tool(document.create_document)
@@ -69,6 +69,9 @@ def register_tools():
     mcp.add_tool(shapes.scale_shape)
     mcp.add_tool(shapes.select_shapes)
     mcp.add_tool(shapes.powerclip)
+    mcp.add_tool(inspection.inspect_shapes)
+    mcp.add_tool(inspection.get_ui_selection)
+    mcp.add_tool(inspection.select_shapes_by_id)
 
     mcp.add_tool(text.set_text_content)
     mcp.add_tool(text.set_text_style)
@@ -92,6 +95,8 @@ def register_tools():
     mcp.add_tool(layers.assign_to_layer)
     mcp.add_tool(layers.set_layer_visible)
     mcp.add_tool(layers.lock_layer)
+    mcp.add_tool(layers.get_page_layers)
+    mcp.add_tool(layers.set_page_layer_state)
 
     mcp.add_tool(export.export_pdf)
     mcp.add_tool(export.export_dxf)

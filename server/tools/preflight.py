@@ -2,6 +2,7 @@
 
 from core.connection import get_connection
 from core.models import ToolResult
+from tools.colors import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB
 
 _CDR_TEXT_SHAPE = 3
 _CDR_PARAGRAPH_TEXT = 1
@@ -198,11 +199,11 @@ def check_rgb_colors() -> ToolResult:
                     fill = s.Fill
                     if fill.Type == 1:  # cdrUniformFill
                         try:
-                            if fill.UniformColor.Type == 1:  # RGB
+                            if fill.UniformColor.Type == CDR_COLOR_RGB:
                                 rgb_items.append({
                                     "name": s.Name or s.StaticID,
                                     "type": "fill",
-                                    "color": f"RGB",
+                                    "color": "RGB",
                                 })
                         except Exception:
                             pass
@@ -210,9 +211,9 @@ def check_rgb_colors() -> ToolResult:
                     pass
                 try:
                     outline = s.Outline
-                    if outline.Type == 1:
+                    if outline.Type in (1, 2):
                         try:
-                            if outline.Color.Type == 1:
+                            if outline.Color.Type == CDR_COLOR_RGB:
                                 rgb_items.append({
                                     "name": s.Name or s.StaticID,
                                     "type": "outline",
@@ -236,7 +237,7 @@ def check_rgb_colors() -> ToolResult:
 
 
 def get_color_report() -> ToolResult:
-    """生成全文档的色彩报告：使用的 CMYK、RGB、Pantone、专色列表。"""
+    """生成当前页顶层形状的纯色填充报告（CMYK、RGB、Pantone）。"""
     conn = get_connection()
     if not conn.status.connected:
         return ToolResult.fail("CorelDRAW 未连接")
@@ -257,12 +258,12 @@ def get_color_report() -> ToolResult:
                     fill = s.Fill
                     if fill.Type == 1:
                         color = fill.UniformColor
-                        if color.Type == 1:
+                        if color.Type == CDR_COLOR_RGB:
                             rgb_colors.add(f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}")
-                        elif color.Type == 0:
+                        elif color.Type == CDR_COLOR_CMYK:
                             c, m, y, k = color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack
                             cmyk_colors.add(f"C{c:.0f} M{m:.0f} Y{y:.0f} K{k:.0f}")
-                        elif color.Type == 2:
+                        elif color.Type == CDR_COLOR_PANTONE:
                             try:
                                 pantone_colors.add(color.Name)
                             except Exception:

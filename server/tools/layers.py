@@ -2,6 +2,7 @@
 
 from core.connection import get_connection
 from core.models import ToolResult
+from tools.document import _scoped_document, _scoped_page
 
 
 def _find_shape(shape_id: str):
@@ -173,3 +174,73 @@ def lock_layer(layer_name: str) -> ToolResult:
     if result["success"]:
         return ToolResult.ok(f"图层已锁定: {layer_name}", **result["result"])
     return ToolResult.fail(result.get("error", "锁定图层失败"))
+
+
+_LAYER_PROPERTIES = {"visible": "Visible", "editable": "Editable", "printable": "Printable"}
+
+
+def _layer_state(layer):
+    return {
+        "name": layer.Name,
+        "master": bool(layer.Master),
+        "special": bool(layer.IsSpecialLayer),
+        **{name: bool(getattr(layer, attr)) for name, attr in _LAYER_PROPERTIES.items()},
+    }
+
+
+def get_page_layers(document_path: str, page_index: int) -> ToolResult:
+    """Read layer visibility, editability, and printability on a specific page of the active saved document.
+
+    page_index is one-based. Shared master layers are identified in the result.
+    """
+    conn = get_connection()
+    if not conn.status.connected:
+        return ToolResult.fail("CorelDRAW is not connected")
+
+    def inspect():
+        doc, actual_path = _scoped_document(conn.app, document_path)
+        page = _scoped_page(doc, page_index)
+        return {
+            "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
+            "layers": [_layer_state(layer) for layer in page.AllLayers],
+        }
+
+    result = conn.safe_call(inspect)
+    if result["success"]:
+        return ToolResult.ok(**result["result"])
+    return ToolResult.fail(result["error"])
+
+
+def set_page_layer_state(
+    document_path: str, page_index: int, layer_name: str, property_name: str, value: bool,
+) -> ToolResult:
+    """Set one flag (visible, editable, or printable) on an exact page-local layer and read back all flags.
+
+    document_path must match the active saved file, page_index is one-based, and layer_name
+    must match exactly. Shared and special layers are excluded. editable=True unlocks the layer.
+    """
+    conn = get_connection()
+    if not conn.status.connected:
+        return ToolResult.fail("CorelDRAW is not connected")
+    if property_name not in _LAYER_PROPERTIES:
+        return ToolResult.fail("property_name must be visible, editable, or printable")
+
+    def set_state():
+        doc, actual_path = _scoped_document(conn.app, document_path)
+        page = _scoped_page(doc, page_index)
+        matches = [layer for layer in page.Layers if layer.Name == layer_name]
+        if len(matches) != 1:
+            raise ValueError(f"Expected exactly one layer named {layer_name!r} on page {page_index}")
+        layer = matches[0]
+        if layer.Master or layer.IsSpecialLayer or layer.Page.Index != page_index:
+            raise ValueError("Only ordinary page-local layers can be changed by this tool")
+        setattr(layer, _LAYER_PROPERTIES[property_name], value)
+        return {"document_path": actual_path, "page_index": page_index, "layer": _layer_state(layer)}
+
+    result = conn.safe_call(set_state)
+    if not result["success"]:
+        return ToolResult.fail(result["error"])
+    data = result["result"]
+    if data["layer"][property_name] != value:
+        return ToolResult(success=False, error=f"CorelDRAW did not apply {property_name}={value}", data=data)
+    return ToolResult.ok(**data)

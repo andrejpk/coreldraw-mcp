@@ -4,6 +4,10 @@ from core.connection import get_connection
 from core.models import ToolResult
 
 _CDR_TEXT_SHAPE = 6
+CDR_COLOR_PANTONE = 1
+CDR_COLOR_CMYK = 2
+CDR_COLOR_RGB = 5
+CDR_COLOR_REGISTRATION = 20
 _FILL_MAP = {"cmyk": 0, "rgb": 1, "pantone": 2}
 
 
@@ -223,18 +227,18 @@ def check_rgb_colors() -> ToolResult:
                     if fill_type == 1:  # cdrUniformFill
                         try:
                             color = s.Fill.UniformColor
-                            if color.Type == 1:  # RGB
+                            if color.Type == CDR_COLOR_RGB:
                                 rgb_items.append({
                                     "name": s.Name,
                                     "type": "fill",
-                                    "color": f"R{color.RGBAssign}",
+                                    "color": f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}",
                                 })
                         except Exception:
                             pass
-                    if s.Outline.Type == 1:
+                    if s.Outline.Type in (1, 2):
                         try:
                             color = s.Outline.Color
-                            if color.Type == 1:
+                            if color.Type == CDR_COLOR_RGB:
                                 rgb_items.append({
                                     "name": s.Name,
                                     "type": "outline",
