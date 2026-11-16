@@ -19,6 +19,7 @@
 - [2026-04-27] [技术债] Agent 会话持久化 — 任务中断后可从断点恢复，不丢失上下文
 - [2026-04-27] [技术债] Token 消耗统计与成本追踪
 - [2026-04-27] [技术债] Python 64-bit 版本检查 — 启动时检测并提示（32-bit Python 会导致 COM 调用失败）
+- [2026-11-16] [生产反馈] [CorelDRAW tools for screen separation workflows](../../docs/requirements/2026-11-16-screen-separation-tools.md) — Prioritize recursive inspection, exact selection, and page-scoped layer controls, then contours and overprint. Proposed for review.
 
 ## 已规划
 
