@@ -34,7 +34,7 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
    ```
 4. **所有工具注册在 `server.py`**，新增工具必须同时在该文件加 `mcp.add_tool()`。
 5. **函数 docstring 即 MCP 工具描述**，会被 Agent 看到，写清楚参数含义。
-6. **COM 常量是硬编码整数**（`cdrDXF=86`, `cdrPNG=776`, `cdrMillimeter=2`, `cdrTextShape=3` 等）。这些常量来自 CorelDRAW 类型库，只有 Windows 上运行 `makepy` 才能生成类型存根，不要试图从 `win32com.client.constants` 导入。
+6. **COM 常量是硬编码整数**（`cdrDXF=86`, `cdrPNG=776`, `cdrMillimeter=3`, `cdrTextShape=3` 等）。这些常量来自 CorelDRAW 类型库，只有 Windows 上运行 `makepy` 才能生成类型存根，不要试图从 `win32com.client.constants` 导入。
 
 ## 已知的代码重复与特殊处理
 
