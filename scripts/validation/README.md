@@ -20,6 +20,6 @@ Run from `server/` with the repo venv against a running CorelDRAW 2022. They bui
 | `catalog_size.py [out.json]` | Tool count and `list_tools` JSON size (schemas, descriptions, output schemas), overall and per module |
 | `audit_lib.py` | Logged MCP client for agent-eye audits: one session, any argument names, JSONL log of tool/args/seconds/bytes/errors; `python audit_lib.py <log>` summarizes per task |
 | `audit_manifest.py` | Client-side film manifest (spots by fill/outline/text run, process/registration sources, hidden-printable) and artifact heuristics over `inspect_shapes` inventories |
-| `e01/*.py` | E01 task scripts (T1 inventory, T2 manifest, T4 underbase/registration, T5 proofs, T6 mutations, ground-truth check); paths point at `C:\CorelMcpLabuns\e01` |
+| `e01/*.py` | E01 task scripts (T1 inventory, T2 manifest, T4 underbase/registration, T5 proofs, T6 mutations, ground-truth check); paths point at `C:\CorelMcpLab\runs\e01` |
 
 Results are recorded in `docs/requirements/2026-11-16-screen-separation-tools.md`.
