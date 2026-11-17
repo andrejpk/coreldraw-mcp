@@ -91,7 +91,7 @@ def apply_contour(
             raise ValueError("The source already has a contour. Inspect it before proceeding.")
         fill_color = None
         if fill_from_shape_id is not None:
-            donor, = _exact_shapes(resolve_page(doc, page_index), [fill_from_shape_id])
+            donor, = _exact_shapes(doc, resolve_page(doc, page_index), [fill_from_shape_id])
             if donor.Fill.Type != _CDR_UNIFORM_FILL:
                 raise ValueError("The fill donor must have a uniform fill")
             fill_color = donor.Fill.UniformColor

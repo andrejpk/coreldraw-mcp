@@ -12,6 +12,7 @@ All measurements are in inches (doc.Unit = 1, cdrInch). Shapes are found by thei
 import argparse, datetime, json, ntpath, os, sys, time, traceback; sys.path.insert(0, ".")
 from collections import Counter
 from core.connection import get_connection
+from core.structure import layer_view, walk_layer
 from tools import inspection
 conn = get_connection()
 
@@ -528,13 +529,13 @@ def big_inventory(out_dir):
 
     def structure():
         layer = [x for x in doc().Pages(1).AllLayers if x.Name == "Flat"][0]
-        return inspection._layer_structure(layer)[1]
+        return walk_layer(layer).entries
     entries = conn.safe_call(structure)["result"]
     tally = Counter()
     for start in range(0, len(entries), 1000):
         def chunk(start=start):
             layer = [x for x in doc().Pages(1).AllLayers if x.Name == "Flat"][0]
-            recs = inspection._read_records(layer, {}, layer.Shapes.Item(1), entries[start:start + 1000],
+            recs = inspection._read_records(layer_view(layer), {}, entries[start:start + 1000],
                                             {"name", "fill", "outline", "overprint_fill", "overprint_outline"})
             return [(r["name"], json.dumps(r["fill"], sort_keys=True), r["outline"]["type"],
                      r["overprint_fill"], r["overprint_outline"]) for r in recs]

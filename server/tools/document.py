@@ -5,8 +5,9 @@ import os
 from typing import Literal
 
 from core.connection import get_connection
-from core.drawing import CDR_TEXT_SHAPE, walk_shapes
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.structure import StaleStructureError, page_layers, read_entries, resolve_path
 from core.targets import (
     Target,
     activate_document,
@@ -76,7 +77,7 @@ def list_documents(detail: bool = False) -> ToolResult:
         active = next((entry["document_path"] for entry in documents if entry["active"]), None)
         return {"active_document_path": active, "documents": documents}
 
-    return _result(conn.safe_call(run))
+    return _result(conn.read_call(run))
 
 
 def open_document(path: str, activate: bool = True) -> ToolResult:
@@ -323,6 +324,82 @@ def edit_pages(
     return _result(conn.safe_call(run))
 
 
+_TEXT_QUERY = ["$item.Name", "$item.PositionX", "$item.PositionY", "$item.SizeWidth", "$item.SizeHeight",
+               "$item.Text.Story.Text", "$item.Text.Type", "$item.Text.Story.Font", "$item.Text.Story.Size",
+               "$item.Text.Story.Bold", "$item.Text.Story.Italic"]
+_TEXT_BATCH = 200
+_TEXT_RESERVE_SECONDS = 20.0
+
+
+def _text_item(entry, name, x, y, width, height):
+    return {
+        "shape_id": entry.shape_id, "parent_id": entry.parent_id, "name": name or "",
+        "x": x, "y": y, "width": width, "height": height,
+        "writable": False, "text_type": "unknown", "content_preview": "",
+    }
+
+
+def _add_story(item, content, text_type, story_props, content_preview_len):
+    item["content_preview"] = content[:content_preview_len]
+    if len(content) > content_preview_len:
+        item["content_preview"] += "…"
+    if text_type in (0, 1, 2, 3):
+        item["text_type"] = "paragraph" if text_type in (1, 3) else "artistic"
+    item["writable"] = True
+    item.update(story_props)
+
+
+def _direct_text_item(shape, entry, content_preview_len):
+    """One text shape through direct COM reads, reporting what cannot be read."""
+    item = _text_item(entry, shape.Name, shape.PositionX, shape.PositionY, shape.SizeWidth, shape.SizeHeight)
+    try:
+        frame = shape.Text
+        story = frame.Story
+        content, text_type = story.Text, frame.Type
+        props = {}
+        for prop in ("Font", "Size", "Bold", "Italic"):
+            try:
+                props[prop.lower()] = getattr(story, prop)
+            except Exception:
+                props[prop.lower()] = None
+        _add_story(item, content, text_type, props, content_preview_len)
+    except Exception as exc:
+        item["read_error"] = str(exc)
+    return item
+
+
+def _text_items(doc, page, content_preview_len, fresh):
+    """Text shapes of all the page's layers (as Page.Shapes, master layers included), through the structure cache."""
+    conn = get_connection()
+    items = []
+    for view in page_layers(doc, page, fresh=fresh):
+        texts = [entry for entry in view.structure.entries if entry.type == CDR_TEXT_SHAPE]
+        for start in range(0, len(texts), _TEXT_BATCH):
+            if conn.time_left() < _TEXT_RESERVE_SECONDS:
+                raise TimeoutError("The page has too many text shapes to list within the time limit. "
+                                   "Page through inspect_shapes(fields=['type', 'name']) instead.")
+            batch = texts[start:start + _TEXT_BATCH]
+            try:
+                rows = read_entries(view, batch, _TEXT_QUERY)
+            except StaleStructureError:
+                raise
+            except Exception:
+                rows = [None] * len(batch)  # one shape is unreadable: read this batch one shape at a time
+            for entry, row in zip(batch, rows, strict=True):
+                if row is None:
+                    shape = resolve_path(view.layer, entry.path)
+                    if str(shape.StaticID) != entry.shape_id:
+                        raise StaleStructureError(f"Shape {entry.shape_id} is no longer at its cached position")
+                    items.append(_direct_text_item(shape, entry, content_preview_len))
+                    continue
+                name, x, y, width, height, content, text_type, font, size, bold, italic = row
+                item = _text_item(entry, name, x, y, width, height)
+                _add_story(item, content, text_type, {"font": font, "size": size, "bold": bold, "italic": italic},
+                           content_preview_len)
+                items.append(item)
+    return items
+
+
 def list_all_text_shapes(
     page_index: int = 0, content_preview_len: int = 40, document_path: str = "",
 ) -> ToolResult:
@@ -344,42 +421,21 @@ def list_all_text_shapes(
             target = Target(app.ActiveDocument, document_identity(app.ActiveDocument))
         doc = target.doc
         page = doc.ActivePage if page_index == 0 else resolve_page(doc, page_index)
-
-        items = []
-        for shape, parent_id in walk_shapes(page.Shapes):
-            if shape.Type != CDR_TEXT_SHAPE:
-                continue
-            item = {
-                "shape_id": str(shape.StaticID), "parent_id": parent_id, "name": shape.Name or "",
-                "x": shape.PositionX, "y": shape.PositionY, "width": shape.SizeWidth, "height": shape.SizeHeight,
-                "writable": False, "text_type": "unknown", "content_preview": "",
-            }
+        for fresh in (False, True):
             try:
-                frame = shape.Text
-                story = frame.Story
-                content = story.Text
-                item["content_preview"] = content[:content_preview_len]
-                if len(content) > content_preview_len:
-                    item["content_preview"] += "…"
-                text_type = frame.Type
-                if text_type in (0, 1, 2, 3):
-                    item["text_type"] = "paragraph" if text_type in (1, 3) else "artistic"
-                item["writable"] = True
-                for prop in ("Font", "Size", "Bold", "Italic"):
-                    try:
-                        item[prop.lower()] = getattr(story, prop)
-                    except Exception:
-                        item[prop.lower()] = None
-            except Exception as exc:
-                item["read_error"] = str(exc)
-            items.append(item)
+                items = _text_items(doc, page, content_preview_len, fresh)
+                break
+            except StaleStructureError:
+                continue
+        else:
+            raise RuntimeError("The page changed while it was being read; retry when it is not being edited")
 
         return {
             **describe(target), "page": page.Index, "total": len(items),
             "writable": sum(item["writable"] for item in items), "shapes": items,
         }
 
-    result = conn.safe_call(_list)
+    result = conn.read_call(_list)
     if result["success"]:
         r = result["result"]
         return ToolResult.ok(f"Page {r['page']}: {r['total']} text shapes, {r['writable']} writable", **r)

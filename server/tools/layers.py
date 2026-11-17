@@ -208,7 +208,7 @@ def get_page_layers(document_path: str, page_index: int) -> ToolResult:
             "layers": [_layer_state(layer) for layer in page.AllLayers],
         }
 
-    result = conn.safe_call(inspect)
+    result = conn.read_call(inspect)
     if result["success"]:
         return ToolResult.ok(**result["result"])
     return ToolResult.fail(result["error"])

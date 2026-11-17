@@ -7,6 +7,7 @@ with batched Shape.Evaluate queries, never saved, and closed with Dirty=False on
 import json, ntpath, os, sys, time, traceback; sys.path.insert(0, ".")
 from collections import Counter
 from core.connection import get_connection
+from core.structure import layer_view, resolve_path, walk_layer
 from tools import inspection
 conn = get_connection()
 
@@ -125,8 +126,7 @@ def profile_layer(path, page_index, layer_index, prof):
     """Run in pieces so no single bridge call approaches the 60 s limit."""
     def structure():
         layer = find_doc(conn.app, path).Pages(page_index).AllLayers.Item(layer_index)
-        _, entries = inspection._layer_structure(layer)
-        return entries
+        return walk_layer(layer).entries
     r = conn.safe_call(structure)
     if not r["success"]:
         raise RuntimeError(r["error"])
@@ -136,25 +136,25 @@ def profile_layer(path, page_index, layer_index, prof):
         layer = find_doc(conn.app, path).Pages(page_index).AllLayers.Item(layer_index)
         anchor = layer.Shapes.Item(1)
         part = entries[start:start + CHUNK]
-        recs = inspection._read_records(layer, {}, anchor, part, None)
+        recs = inspection._read_records(layer_view(layer), {}, part, None)
         extra = []
         for s in range(0, len(part), 100):
             sub = part[s:s + 100]
             q = []
-            for p, _ in sub:
+            for p in (entry.path for entry in sub):
                 base = inspection._query_path(p)
                 q += [f"iif({base}.Type = 7, 0, {base}.PowerClip.Shapes.Count)",
                       f"iif({base}.Type = 6, {base}.Text.Type, -1)"]
             vals = inspection._query(anchor, q)
             extra += [(vals[i], vals[i + 1]) for i in range(0, len(vals), 2)]
         clips = []
-        for (p, _), (pc, tt) in zip(part, extra):
+        for p, (pc, tt) in zip((entry.path for entry in part), extra):
             if pc:
                 clips.append(p)
         content = Profile()
         for p in clips:
-            walk_direct(inspection._resolve_path(layer, p).PowerClip.Shapes, content, len(p))
-        return recs, extra, [len(p) for p, _ in part], len(clips), content
+            walk_direct(resolve_path(layer, p).PowerClip.Shapes, content, len(p))
+        return recs, extra, [len(entry.path) for entry in part], len(clips), content
     for start in range(0, len(entries), CHUNK):
         r = conn.safe_call(chunk, start)
         if not r["success"]:

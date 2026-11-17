@@ -108,22 +108,24 @@ _TEXT_QUERY_BATCH = 100
 _MAX_TEXT_CHARACTERS = 5000
 
 
-def _character_fills(story):
-    """Return (text, fill) for every character, using batched queries with a direct-read fallback."""
-    count = story.Characters.Count
+def _character_fills(shape, story):
+    """Return (text, fill) for every character, using batched queries with a direct-read fallback.
+
+    The queries run on the text shape: TextRange.Evaluate has no @com, so queries on the story always failed.
+    """
+    count = shape.Evaluate("@com.Text.Story.Characters.Count")
     if count > _MAX_TEXT_CHARACTERS:
         raise ValueError(f"Text has {count} characters; the limit is {_MAX_TEXT_CHARACTERS}")
+    # convert binds each character to $item, so its path is resolved once, not once per property.
+    leaf = (f"array($item.Text, array($item.Fill.Type, iif($item.Fill.Type = {_CDR_UNIFORM_FILL}, "
+            f"{_color_query('$item.Fill.UniformColor')}, 0)))")
     characters = []
     for start in range(1, count + 1, _TEXT_QUERY_BATCH):
         indices = range(start, min(count, start + _TEXT_QUERY_BATCH - 1) + 1)
         try:
-            expressions = []
-            for index in indices:
-                path = f"@com.Characters.Item({index})"
-                expressions += [f"{path}.Text", f"array({path}.Fill.Type, iif({path}.Fill.Type = {_CDR_UNIFORM_FILL}, "
-                                f"{_color_query(path + '.Fill.UniformColor')}, 0))"]
-            values = _query(story, expressions)
-            for text, (fill_type, color) in zip(values[::2], values[1::2], strict=True):
+            values = _query(shape, [f"array(@com.Text.Story.Characters.Item({index})).convert({leaf})"
+                                    for index in indices])
+            for text, (fill_type, color) in (value[0] for value in values):
                 fill = {"type": fill_type}
                 if fill_type == _CDR_UNIFORM_FILL:
                     fill["color"] = _decode_queried_color(color)
@@ -163,7 +165,7 @@ def inspect_text_fill_runs(document_path: str, page_index: int, shape_id: str) -
     fill reports only part of mixed text, so check these runs before copying fills or separating.
     """
     def inspect(app, doc, shape):
-        characters = _character_fills(_text_story(shape))
+        characters = _character_fills(shape, _text_story(shape))
         return {"text": "".join(text for text, _ in characters), "runs": _fill_runs(characters)}
 
     return _on_shape(document_path, page_index, shape_id, inspect)
@@ -184,12 +186,12 @@ def copy_fill_to_text_range(
 
     def copy(app, doc, shape):
         story = _text_story(shape)
-        before = _character_fills(story)
+        before = _character_fills(shape, story)
         if end > len(before):
             raise ValueError(f"The text has {len(before)} characters; end must not exceed it")
         if any(fill["type"] not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL) for _, fill in before[start:end]):
             raise ValueError("Characters in the range must have no fill or a uniform fill")
-        donor, = _exact_shapes(resolve_page(doc, page_index), [source_shape_id])
+        donor, = _exact_shapes(doc, resolve_page(doc, page_index), [source_shape_id])
         if donor.Fill.Type != _CDR_UNIFORM_FILL:
             raise ValueError("The donor must have a uniform fill")
         color = donor.Fill.UniformColor.GetCopy()
@@ -199,7 +201,7 @@ def copy_fill_to_text_range(
             story.Range(start, end).Fill.ApplyUniformFill(color)
         finally:
             doc.EndCommandGroup()
-        after = _character_fills(story)
+        after = _character_fills(shape, story)
         data = {
             "source_shape_id": source_shape_id, "start": start, "end": end,
             "source_fill": expected, "runs": _fill_runs(after),

@@ -347,4 +347,127 @@ check("layer proof: state unchanged after refusals", direct(pdf_state) == state0
 r = call("close_document", document_path=SAVED, discard_changes=True)
 check("cleanup: close the E08 document by path", r["success"], r.get("error"))
 
+# 4. Structure cache and bridge status (E17a) ------------------------------------------------------
+# The server caches each page's structure between calls. Edits made here through this process's own COM
+# bridge bypass the server (like edits in the CorelDRAW UI); edits through MCP tools invalidate the cache.
+import threading
+import time
+from core import structure as structure_cache
+from core.drawing import walk_shapes
+from tools import inspection
+ST, BIG = FX + r"\e17a_structure.cdr", FX + r"\e17a_big_flat.cdr"
+for source, target in (("structure.cdr", ST), ("big_flat.cdr", BIG)):
+    shutil.copyfile(TEMPLATES / source, target)
+    r = call("open_document", path=target, activate=False)
+    check(f"cache setup: open {Path(target).name}", r["success"], r.get("error"))
+
+
+def mcp_inventory(path, limit=5):
+    shapes, offset = [], 0
+    while offset is not None:
+        r = call("inspect_shapes", document_path=path, page_index=1, offset=offset, limit=limit)
+        assert r["success"], r
+        shapes += r["data"]["shapes"]
+        offset = r["data"]["next_offset"]
+    return shapes
+
+
+def truth(path):
+    """A fresh walk in this process (its own empty cache), as the ground truth."""
+    structure_cache.invalidate()
+    r = inspection.inspect_shapes(path, 1)
+    assert r.success, r.error
+    return r.data["shapes"]
+
+
+def edit(func):
+    """An out-of-band edit of the structure fixture: returns func(doc, layers by name, shapes by name)."""
+    def run():
+        doc = doc_of(ST)
+        layers = {layer.Name: layer for layer in doc.Pages(1).AllLayers}
+        named = {s.Name: s for layer in layers.values() for s, _ in walk_shapes(layer.Shapes) if s.Name}
+        return func(doc, layers, named)
+    return direct(run)
+
+
+def ids(shapes):
+    return [s["shape_id"] for s in shapes]
+
+
+base = mcp_inventory(ST)
+check("cache: paged inventory (limit 5) equals a fresh full walk", base == truth(ST), len(base))
+check("cache: repeated paged inventory (cache hits) is identical", mcp_inventory(ST) == base)
+r1, r2 = edit(lambda doc, layers, named: [str(layers[n].CreateRectangle2(1, 1, 0.5, 0.5).StaticID)
+                                          for n in ("Groups", "PowerClip")])
+inv = mcp_inventory(ST)
+check("cache, out-of-band: new top-level shapes appear", r1 in ids(inv) and r2 in ids(inv) and inv == truth(ST))
+gone = edit(lambda doc, layers, named: (str(named["deep_leaf2"].StaticID), named["deep_leaf2"].Delete())[0])
+inv = mcp_inventory(ST)
+check("cache, out-of-band: a deleted nested shape disappears", gone not in ids(inv) and inv == truth(ST))
+r = call("get_shape_overprint", document_path=ST, page_index=1, shape_id=gone)
+check("cache, out-of-band: exact-ID read of the deleted shape fails as not found",
+      not r["success"] and "not found" in r["error"], r.get("error"))
+before = ids(mcp_inventory(ST))
+edit(lambda doc, layers, named: named["nest_l1"].OrderToBack())
+inv = mcp_inventory(ST)
+check("cache, out-of-band: top-level reorder (same counts, no new IDs) is reflected",
+      ids(inv) != before and inv == truth(ST), ids(inv)[:6])
+before = ids(inv)
+edit(lambda doc, layers, named: named["nest_l2_rect"].OrderBackOne())  # first of two children -> second
+inv = mcp_inventory(ST)
+check("cache, out-of-band: reorder inside a nested group is reflected", ids(inv) != before and inv == truth(ST),
+      ids(inv)[:8])
+restored = edit(lambda doc, layers, named: (str(named["nest_l3_ellipse"].StaticID), named["nest_l3_ellipse"].Delete())[0])
+mcp_inventory(ST)
+undo(ST)
+inv = mcp_inventory(ST)
+check("cache, out-of-band: undo of a delete restores the old ID", restored in ids(inv) and inv == truth(ST))
+def swap(doc, layers, named):
+    first = [x for x in layers["Groups"].Shapes if str(x.StaticID) == r1][0]
+    second = [x for x in layers["PowerClip"].Shapes if str(x.StaticID) == r2][0]
+    first.MoveToLayer(layers["PowerClip"])
+    second.MoveToLayer(layers["Groups"])
+
+
+edit(swap)
+inv = mcp_inventory(ST)
+moved = {s["shape_id"]: s["layer"]["name"] for s in inv}
+check("cache, out-of-band: shapes swapped between layers (counts unchanged) are reported on their new layers",
+      moved.get(r1) == "PowerClip" and moved.get(r2) == "Groups" and inv == truth(ST), (moved.get(r1), moved.get(r2)))
+r = call("get_shape_overprint", document_path=ST, page_index=1, shape_id=r1)
+check("cache, out-of-band: exact-ID read finds a moved shape", r["success"], r.get("error"))
+r = call("duplicate_shape_by_id", document_path=ST, page_index=1, shape_id=r2, unit="in", dx=0.1)
+inv = mcp_inventory(ST)
+new_ids = set(ids(inv)) - set(ids(base)) - {r1, r2}
+check("cache, MCP edit: a duplicate made through the server appears", r["success"] and len(new_ids) == 1
+      and inv == truth(ST), r.get("error") or new_ids)
+dup = next(iter(new_ids), None)
+r = call("delete_shape_by_id", document_path=ST, page_index=1, shape_id=dup)
+inv = mcp_inventory(ST)
+check("cache, MCP edit: a shape deleted through the server disappears", r["success"] and dup not in ids(inv)
+      and inv == truth(ST), r.get("error"))
+r = call("list_all_text_shapes", document_path=ST, page_index=1)
+check("text list: batched listing reads the structure fixture", r["success"], r.get("error"))
+
+# Status while a tool runs: get_coreldraw_status answers at once and names the running tool.
+holder, polls = {}, []
+worker = threading.Thread(target=lambda: holder.setdefault("r", call("inspect_shapes", document_path=BIG, page_index=1)))
+worker.start()
+while worker.is_alive():
+    status = call("get_coreldraw_status")
+    if not status["success"]:
+        polls.append(status)
+    time.sleep(0.05)
+worker.join()
+running = [p["data"].get("running") for p in polls if p["data"].get("running")]
+check("status: reports the running tool, its time and that it is read-only",
+      any(run["operation"] == "inspect_shapes" and run["read_only"] for run in running)
+      and all(p["data"]["state"] == "busy" and "inspect_shapes" in p["error"] for p in polls),
+      (len(polls), running[:1], holder["r"].get("_seconds")))
+check("status: the full big_flat inventory finishes in one call", holder["r"]["success"]
+      and len(holder["r"]["data"]["shapes"]) == 4000 and holder["r"]["data"]["next_offset"] is None)
+for target in (ST, BIG):
+    r = call("close_document", document_path=target, discard_changes=True)
+    check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

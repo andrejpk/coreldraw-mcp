@@ -2,8 +2,9 @@
 
 import math
 
-from core.drawing import CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, walk_shapes
+from core.drawing import CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.structure import walk_layer
 from core.units import unit_code
 from tools.inspection import (
     _CDR_UNIFORM_FILL,
@@ -171,7 +172,7 @@ def weld_copies_by_id(document_path: str, page_index: int, shape_ids: list[str])
                     raise RuntimeError("Cannot identify a new weld result")
                 live_copies[result_id] = result
             result_id = _static_id(result)
-            _exact_shapes(doc.Pages(page_index), [*shape_ids, result_id])
+            _exact_shapes(doc, doc.Pages(page_index), [*shape_ids, result_id])
             return {"source_shape_ids": shape_ids, "result_shape_id": result_id, "layer_name": result.Layer.Name}
         except Exception as exc:
             if remaining := _cleanup_copies(live_copies):
@@ -314,8 +315,8 @@ def delete_shape_by_id(document_path: str, page_index: int, shape_id: str) -> To
     """Delete the exact shape from the scoped page and verify that its ID is gone."""
     def delete(app, doc, shape):
         shape.Delete()
-        if any(_static_id(item) == shape_id for layer in doc.Pages(page_index).AllLayers
-               for item, _ in walk_shapes(layer.Shapes)):
+        # A fresh batched walk of each layer (not the cache): seconds faster than one COM read per shape.
+        if any(shape_id in walk_layer(layer).position for layer in doc.Pages(page_index).AllLayers):
             return {"verification_error": "The requested shape still exists after deletion"}
         return {"deleted": True}
 

@@ -24,7 +24,7 @@ def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResu
             view.SimulateOverprints = enabled
         return {"document_path": actual_path, "simulate_overprints": bool(view.SimulateOverprints)}
 
-    result = conn.safe_call(read_view)
+    result = conn.safe_call(read_view) if enabled is not None else conn.read_call(read_view)
     if not result["success"]:
         return ToolResult.fail(result["error"])
     data = result["result"]
@@ -67,7 +67,7 @@ def get_print_separation_settings(document_path: str) -> ToolResult:
         }
         return {"document_path": actual_path, **_read_fields(fields)}
 
-    result = conn.safe_call(read_settings)
+    result = conn.read_call(read_settings)
     if result["success"]:
         return ToolResult.ok(**result["result"])
     return ToolResult.fail(result["error"])

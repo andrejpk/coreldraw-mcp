@@ -22,7 +22,7 @@ def copy_shape_fill(
         return ToolResult.fail("The donor cannot also be a target")
 
     def copy(app, doc, targets):
-        donor, = _exact_shapes(doc.Pages(page_index), [source_shape_id])
+        donor, = _exact_shapes(doc, doc.Pages(page_index), [source_shape_id])
         if donor.Fill.Type != _CDR_UNIFORM_FILL:
             raise ValueError("The donor must have a uniform fill")
         color = donor.Fill.UniformColor.GetCopy()

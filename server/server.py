@@ -27,11 +27,18 @@ def setup_logging(*, http):
 
 
 def get_coreldraw_status() -> ToolResult:
-    """Check whether the running CorelDRAW instance responds to COM without opening or changing artwork."""
+    """Check whether the running CorelDRAW instance responds to COM without opening or changing artwork.
+
+    While another tool is still running, returns state "busy" and running: the tool (operation), seconds,
+    read_only, time_limit_seconds, timed_out and interrupting (a read past its limit being cancelled).
+    """
     status = get_connection().probe()
     if status["success"]:
         return ToolResult.ok(state="ready", version=status["version"])
-    return ToolResult(success=False, error=status["error"], data={"state": status["state"]})
+    data = {"state": status["state"]}
+    if status.get("running"):
+        data["running"] = status["running"]
+    return ToolResult(success=False, error=status["error"], data=data)
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
