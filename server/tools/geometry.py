@@ -160,10 +160,11 @@ def duplicate_shapes(
         _refuse(targets, extra)
         before = _read(targets, [_BOUNDS])
         move_x, move_y = (convert(value, unit, document_unit) for value in (dx, dy))
+        # Resolve every source first: each copy shifts the stacking indices of the shapes below it.
+        resolved = {shape_id: _com_shape(view, entry, shape_id) for shape_id, (view, entry) in targets.items()}
         copies = []
         with undoable(doc, page, "MCP duplicate_shapes") as step:
-            for shape_id, (view, entry) in targets.items():
-                source = _com_shape(view, entry, shape_id)
+            for source in resolved.values():
                 if layer is not None:
                     copy = source.CopyToLayer(layer)
                     if move_x or move_y:
@@ -217,9 +218,9 @@ def convert_to_curves(document_path: str, page_index: int, shape_ids: list[str])
         _refuse(targets, lambda shape_id, view, entry: refusal(view, entry, consume=True))
         todo = {shape_id: target for shape_id, target in targets.items() if target[1].type != 3}
         converted = {}
+        shapes = {shape_id: _com_shape(view, entry, shape_id) for shape_id, (view, entry) in todo.items()}
         with undoable(doc, page, "MCP convert_to_curves") as step:
-            for shape_id, (view, entry) in todo.items():
-                shape = _com_shape(view, entry, shape_id)
+            for shape_id, shape in shapes.items():
                 shape.ConvertToCurves()
                 converted[shape_id] = str(shape.StaticID)
         after_ids = page_ids(doc, page)

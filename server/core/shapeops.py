@@ -4,6 +4,7 @@
   undone (``Document.Undo(1)``; an empty command group is also one undo step, so this never undoes an earlier
   edit) and the page's StaticIDs are compared with the state before. The document must be active (Undo follows
   the active document; ``core.targets.resolve_document(..., activate=True)``).
+* ``optimized(app)``: Optimization on and events off for a batch of edits, restored (and the view refreshed) after.
 * ``page_ids(doc, page)``: every StaticID on the page's layers (fresh walk).
 * ``target_layer(page, name)``: an ordinary, editable layer local to the page, by exact name.
 * ``geometry(shape, unit)``: area with holes subtracted, perimeter, subpath count and bounds of a shape's
@@ -39,6 +40,19 @@ def page_ids(doc, page) -> set[str]:
 class _Step:
     def __init__(self, before):
         self.before = before
+
+
+@contextmanager
+def optimized(app):
+    """CorelDRAW's Optimization mode (no screen updates or events) for many edits; always restored and refreshed."""
+    previous = (bool(app.Optimization), bool(app.EventsEnabled))
+    app.Optimization, app.EventsEnabled = True, False
+    try:
+        yield
+    finally:
+        app.Optimization, app.EventsEnabled = previous
+        if not previous[0]:
+            app.Refresh()
 
 
 @contextmanager

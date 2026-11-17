@@ -1,20 +1,25 @@
 """offset_silhouette: the welded outline of exact objects, offset inward or outward, as one new shape.
 
-How it is built (one CorelDRAW command group, so one undo step; a failure part way is undone):
+How it is built (one CorelDRAW command group, so one undo step; a failure part way is undone). Every step is a
+shape-level operation on temporary copies (the path of the old weld_copies_by_id + apply_contour +
+break_contour_apart tools); no in-memory curve geometry (``Curve.WeldWith`` crashed CorelDRAW in E13):
 
-1. Inputs expand to their visible leaves (groups and, when the sources are kept, effect groups). Leaves whose fill
-   or outline matches ``exclude_colors`` (the shared color spec, matched as ``find_shapes`` does: fills incl.
-   fountain stops, outlines and every text run) are skipped and reported, as are hidden leaves and leaves without
-   fill or outline.
-2. Each leaf contributes its painted area as a curve: the fill area is its display curve; an outline contributes
-   its stroked area, taken from a temporary copy whose outline is converted to an object (CorelDRAW's
-   Convert Outline To Object: width, caps, joins and pen shape included). Text is copied and converted to curves
-   first. Copies are made on the result layer and deleted again.
-3. The curves are welded in memory (``Curve.WeldWith``, the same union as Shape.Weld; counters such as the hole
-   in an "O" stay open, unlike Create Boundary which fills them) and offset with ``Curve.Contour`` (CorelDRAW's
-   contour geometry: same result as a contour effect broken apart, without the temporary effect objects).
-4. The result is created on the target layer, filled, outline removed, fill overprint set, named, and placed
-   behind the backmost participating object on that layer (or on top of the layer when none is there).
+1. Inputs expand to their visible leaves (groups). Leaves whose fill or outline matches ``exclude_colors`` (the
+   shared color spec, matched as ``find_shapes`` does: fills incl. fountain stops, outlines and every text run)
+   are skipped and reported, as are hidden leaves and leaves without fill or outline. Effect groups and
+   effect-generated objects are refused (copying them and editing the copies is untested and was part of a
+   crash sequence in E13); pass the effect's control shape, or separate_effect first.
+2. Leaves are copied to the result layer. Fill-only leaves go in sets whose bounding boxes neither overlap nor
+   touch: one ``ShapeRange.CopyToLayer`` and one ``Combine`` per set (shapes that cannot overlap keep exactly
+   their area when combined). Text and outlined leaves are copied one by one; text copies are converted to
+   curves, outlines to objects (Convert Outline To Object: width, caps, joins and pen shape included).
+3. The pieces are welded with ``Shape.Weld`` in pairs (a balanced tree, so intermediate shapes stay small).
+   Counters such as the hole in an "O" stay open, unlike Create Boundary which fills them. The edit stops and
+   is undone once it has run ``_BUDGET_SECONDS``, well inside the bridge's 60 s limit.
+4. The offset is a one-step contour effect on the welded shape, separated (Break Contour Apart); the welded
+   shape and every other temporary are deleted.
+5. The result is filled, outline removed, fill overprint set, named, and placed behind the backmost
+   participating object on the target layer (or on top of the layer when none is there).
 
 Verification reads the result back: StaticIDs on the page (only the result is new; sources kept or removed as
 asked), layer, paint, area with holes subtracted, bounds, and the inset (or outset) actually achieved: the mean
@@ -24,6 +29,7 @@ from the area change divided by the silhouette's perimeter, and the minimum per 
 from __future__ import annotations
 
 import math
+import time
 from typing import Literal
 
 import pywintypes
@@ -36,6 +42,7 @@ from core.shapeops import (
     geometry,
     holds_powerclip,
     is_container,
+    optimized,
     page_ids,
     refusal,
     rounded,
@@ -45,18 +52,20 @@ from core.shapeops import (
 from core.shapeops import (
     target_layer as resolve_layer,
 )
-from core.structure import locate_entries, resolve_path
+from core.structure import StaleStructureError, locate_entries, resolve_path
 from core.units import MEASUREMENT_UNITS, convert, unit_name
 from tools import find
-from tools.colors import _com_shape, _edit, _read, _RefusedError, _resolve_color, _states
+from tools.colors import _edit, _read, _RefusedError, _resolve_color, _states
 
 _DIRECTIONS = {"inside": 0, "outside": 1}
 _CORNERS = {"miter": 4, "round": 2, "bevel": 0}  # cdrContourCornerType: mitered offset bevel (default), round, bevel
 _SQUARE_CAP, _MITER_LIMIT = 2, 15.0  # CorelDRAW's contour defaults
 _MAX_LISTED = 200
-# Measured: 4 objects 1.4 s, 126 (Good News) 4.2 s; about 1,870 overran the 60 s bridge limit (the in-memory
-# union grows with every weld). Larger selections must be split until a faster union is validated.
-_MAX_PARTICIPANTS = 400
+# Every copy, combine and weld is a CorelDRAW command (about 0.1-0.2 s each on real art) inside one bridge call,
+# which the bridge cancels at 60 s. The edit stops and is undone once it has run this long.
+_BUDGET_SECONDS = 35.0
+_MAX_PARTICIPANTS = 1000  # resolving and reading them happens before the budget starts
+_BOUNDS = ["$item.LeftX", "$item.BottomY", "$item.RightX", "$item.TopY"]
 _PAINT = ["$item.Visible", f"iif($item.Type = {TEXT}, -1, $item.Fill.Type)",
           f"iif($item.Type = {TEXT}, -1, $item.Outline.Type)", f"iif($item.Type = {TEXT}, 0, $item.Outline.Width)"]
 
@@ -80,12 +89,15 @@ def offset_silhouette(
 
     Fills, outline strokes and text (converted on copies) are welded across layers and groups; holes stay
     open. offset in unit (0 = none), CorelDRAW contour geometry, corner miter|round|bevel. exclude_colors:
-    color specs as in set_fill; objects whose fill, outline or any text run matches are skipped (listed).
-    color: result fill (default: the first object's fill); overprint_fill; name. target_layer: editable
-    layer of this page (default: the first object's layer); the result goes behind the backmost object
-    there. keep_sources=false deletes the participants. Refuses bitmaps, PowerClips, master-layer objects.
+    color specs as in set_fill; objects whose fill, outline or any text run matches are skipped (listed;
+    specs that matched nothing are in exclude_unmatched). color: result fill (default: the first object's
+    fill); overprint_fill; name. target_layer: editable layer of this page (default: the first object's
+    layer); the result goes behind the backmost object there. keep_sources=false deletes the participants.
+    Refuses bitmaps, PowerClips, master-layer objects, effect groups and effect-generated objects (pass the
+    control shape, or separate_effect first). One undo step. Fills are fast (100 in ~6 s); outlined objects
+    and text cost ~0.3 s each, and a call that runs past 35 s is undone (split shape_ids).
     Returns result_id, layer, area (holes subtracted), bounds, silhouette (before the offset), offset
-    achieved (mean = area change / perimeter; min per side; in unit), participants, skipped, fill.
+    achieved (mean = area change / perimeter; min per side; in unit), participants, skipped, fill, seconds.
     """
     if unit not in MEASUREMENT_UNITS:
         return ToolResult.fail(f"unit must be one of {', '.join(MEASUREMENT_UNITS)}")
@@ -103,34 +115,46 @@ def offset_silhouette(
     conn = get_connection()
 
     def body(app, doc, page, targets):
+        clock = [time.perf_counter()]
+        seconds = {}
+
+        def lap(name):
+            now = time.perf_counter()
+            seconds[name] = round(now - clock[0], 3)
+            clock[0] = now
+
         document_unit = doc.Unit
         layer, leaves = _inputs(page, targets, keep_sources, target_layer)
-        participants, skipped = _participants(conn, document_path, page_index, leaves, excludes)
+        participants, skipped, unmatched = _participants(conn, document_path, page_index, leaves, excludes)
         if not participants:
             raise _RefusedError([{"id": shape_id, "layer": view.name, "reason": f"nothing takes part: {_summary(skipped)}"}
                                  for shape_id, (view, _) in targets.items()])
         if len(participants) > _MAX_PARTICIPANTS:
-            raise ValueError(f"{len(participants)} objects take part; at most {_MAX_PARTICIPANTS} fit in one call. "
-                             "Split shape_ids, or weld parts first with combine_shapes")
+            raise ValueError(f"{len(participants)} objects take part; at most {_MAX_PARTICIPANTS} in one call. "
+                             "Split shape_ids")
         spec = fill_spec or _donor_spec(participants)
         resolved = _resolve_color(app, doc, page, spec)
         behind = _backmost(participants, layer)
-        sources = {leaf: _com_shape(view, entry, leaf) for leaf, (view, entry, _, _) in participants.items()}
+        sources = _resolve_all(participants)
+        plain = [leaf for leaf, (_, _, _, parts) in participants.items() if parts == ["fill"]]
+        bounds = _read({leaf: participants[leaf][:2] for leaf in plain}, _BOUNDS) if plain else {}
         document_offset = convert(offset, unit, document_unit)
-        with undoable(doc, page, "MCP offset_silhouette") as step:
-            union, union_shape, temps = _union(app, doc, layer, participants, sources)
+        lap("prepare")
+        deadline = clock[0] + _BUDGET_SECONDS - sum(seconds.values())
+        with optimized(app), undoable(doc, page, "MCP offset_silhouette") as step:
+            union_shape, temps = _union(app, layer, participants, sources, bounds, lap, deadline)
             union_geometry = geometry(union_shape, document_unit)
             if document_offset > 0:
-                curve = union.Contour(document_offset, _DIRECTIONS[direction], _SQUARE_CAP, _CORNERS[corner],
-                                      _MITER_LIMIT)
-                if curve is None or not curve.SubPaths.Count:
-                    raise ValueError("The offset removes the whole silhouette")
+                result = _contour(union_shape, document_offset, direction, corner)
             else:
-                curve = union
-            result = layer.CreateCurve(curve)
+                result = union_shape
+            lap("offset")
+            keep = str(result.StaticID)
             for temp in temps:
-                if _alive(temp):
+                if _alive(temp) and str(temp.StaticID) != keep:
                     temp.Delete()
+            if result.Layer.Name != layer.Name:
+                result.MoveToLayer(layer)
             if resolved.none:
                 result.Fill.ApplyNoFill()
             else:
@@ -145,8 +169,14 @@ def offset_silhouette(
                 for source in sources.values():
                     source.Delete()
             result_id = str(result.StaticID)
-        return _verify(doc, page, step.before, result, result_id, union_geometry, participants, skipped, layer,
+            lap("finish")
+        data = _verify(doc, page, step.before, result, result_id, union_geometry, participants, skipped, layer,
                        resolved, document_unit, document_offset)
+        lap("verify")
+        # A misspelled exclusion would silently put that ink into the result: name the specs that matched nothing.
+        data["exclude_unmatched"] = unmatched
+        data["seconds"] = seconds
+        return data
 
     def _verify(doc, page, before, result, result_id, union_geometry, participants, skipped, layer, resolved,
                 document_unit, document_offset):
@@ -200,7 +230,7 @@ def _inputs(page, targets, keep_sources, layer_name):
 
     leaves = {}
     for shape_id, (view, entry) in targets.items():
-        reason = refusal(view, entry, consume=not keep_sources, groups=True, effects=keep_sources)
+        reason = refusal(view, entry, consume=not keep_sources, groups=True)
         if reason is None and holds_powerclip(view, entry):
             reason = "holds PowerClip contents; extract them first"
         if reason:
@@ -215,7 +245,7 @@ def _inputs(page, targets, keep_sources, layer_name):
                     refuse(shape_id, view, f"member {item.shape_id} holds PowerClip contents; extract them first")
                     break
                 continue
-            reason = refusal(view, item, consume=not keep_sources, effects=keep_sources)
+            reason = refusal(view, item, consume=not keep_sources)
             if reason:
                 refuse(shape_id, view, f"member {item.shape_id}: {reason}")
                 break
@@ -233,13 +263,15 @@ def _inputs(page, targets, keep_sources, layer_name):
 
 
 def _participants(conn, document_path, page_index, leaves, excludes):
-    """Split leaves into participants {id: (view, entry, input id, parts)} and skipped records."""
-    skipped, excluded = [], {}
+    """Participants {id: (view, entry, input id, parts)}, skipped records, and exclusion specs that matched nothing."""
+    skipped, excluded, unmatched = [], {}, []
     ids = list(leaves)
     layers = sorted({view.name for view, _, _ in leaves.values()})
     for spec, _ in excludes:
         scan = find._scan(conn, document_path, [page_index], layers, (None, {"ids": ids, "color": spec}, None, None,
                                                                        None))
+        if not scan["matches"]:
+            unmatched.append(spec)
         for match in scan["matches"]:
             excluded.setdefault(match["id"], (spec, match.get("color_parts")))
     hidden = _hidden(leaves)
@@ -260,7 +292,7 @@ def _participants(conn, document_path, page_index, leaves, excludes):
                 participants[leaf] = (view, entry, source, parts)
             else:
                 skipped.append({"id": leaf, "source": source, "reason": "no_fill_no_outline"})
-    return participants, skipped
+    return participants, skipped, unmatched
 
 
 def _hidden(leaves):
@@ -309,30 +341,33 @@ def _backmost(participants, layer):
     return None if best is None else resolve_path(best[0].layer, (best[1],))
 
 
-def _painted_curves(shape, parts, layer, temps):
-    """Curves of a shape's painted area: its display curve (fill) and its stroke as an object (outline)."""
-    if parts == ["fill"]:
-        return [shape.DisplayCurve]
+def _painted_shapes(shape, parts, layer, temps):
+    """Temporary shapes on ``layer`` covering a shape's painted area: its fill, and its stroke as an object."""
     copy = shape.CopyToLayer(layer)
     temps.append(copy)
     if "text" in parts:
         copy.ConvertToCurves()
-    curves = []
-    for part in list(_leaf_shapes(copy)):
+    copies = [copy]
+    if copy.Type == 7:  # mixed text can convert to a group: every piece becomes its own top-level temporary
+        ungrouped = copy.UngroupAllEx()
+        copies = [ungrouped.Item(index) for index in range(1, ungrouped.Count + 1)]
+        temps.extend(copies)
+    out = []
+    for part in copies:
         filled = bool(part.Fill.Type)
-        if filled:
-            curves.append(part.DisplayCurve)
         if part.Outline.Type and part.Outline.Width > 0:
             # CorelDRAW removes a part that has no fill once its outline became an object.
             stroke = part.Outline.ConvertToObject()
             if stroke is not None:
                 temps.append(stroke)
-                curves.append(stroke.DisplayCurve)
-    return curves
+                out.append(stroke)
+        if filled:
+            out.append(part)
+    return out
 
 
 def _alive(shape) -> bool:
-    """False for a COM shape that CorelDRAW has removed (an outline-only part after Convert Outline To Object)."""
+    """False for a COM shape that CorelDRAW has removed (welded, or outline-only after Convert Outline To Object)."""
     try:
         shape.StaticID
     except pywintypes.com_error:
@@ -340,30 +375,136 @@ def _alive(shape) -> bool:
     return True
 
 
-def _leaf_shapes(shape):
-    if shape.Type == 7:
-        for index in range(1, shape.Shapes.Count + 1):
-            yield from _leaf_shapes(shape.Shapes.Item(index))
-    else:
-        yield shape
+def _resolve_all(participants):
+    """COM shapes of every participant, each StaticID verified; shared group prefixes are resolved once."""
+    cache, out = {}, {}
+    for leaf, (view, entry, _, _) in participants.items():
+        shape = None
+        for depth in range(len(entry.path), 0, -1):
+            shape = cache.get((id(view), entry.path[:depth]))
+            if shape is not None:
+                break
+        else:
+            depth = 0
+        for size in range(depth + 1, len(entry.path) + 1):
+            index = entry.path[size - 1]
+            if size == 1:
+                shape = view.layer.Shapes.Item(index)
+            else:
+                shape = shape.PowerClip.Shapes.Item(-index) if index < 0 else shape.Shapes.Item(index)
+            cache[(id(view), entry.path[:size])] = shape
+        if str(shape.StaticID) != leaf:
+            raise StaleStructureError(f"Shape {leaf} is no longer at its cached position")
+        out[leaf] = shape
+    return out
 
 
-def _union(app, doc, layer, participants, sources):
-    """Weld every painted curve in memory; returns (curve, a temporary shape of it, temporary shapes)."""
-    temps, curves = [], []
-    for leaf, (_, _, _, parts) in participants.items():
-        curves.extend(_painted_curves(sources[leaf], parts, layer, temps))
-    if not curves:
+def _disjoint_sets(bounds):
+    """Group IDs so that the bounding boxes within a group neither overlap nor touch (greedy, left to right)."""
+    sets = []
+    for leaf in sorted(bounds, key=lambda key: bounds[key][0]):
+        left, bottom, right, top = bounds[leaf]
+        for members in sets:
+            if not any(left <= o[2] and o[0] <= right and bottom <= o[3] and o[1] <= top for o in members[1]):
+                members[0].append(leaf)
+                members[1].append(bounds[leaf])
+                break
+        else:
+            sets.append(([leaf], [bounds[leaf]]))
+    return [members[0] for members in sets]
+
+
+def _union(app, layer, participants, sources, bounds, lap=lambda name: None, deadline=None):
+    """Weld temporary copies of every painted part; returns (welded shape, temporaries).
+
+    Fill-only objects are copied in sets whose bounding boxes neither overlap nor touch, one CopyToLayer and one
+    Combine per set (combining shapes that cannot overlap keeps exactly their area, holes included). Text and
+    outlines are copied one by one and converted. The pieces are then welded pairwise with Shape.Weld.
+    """
+    def budget(done, total, stage):
+        if deadline is not None and time.perf_counter() > deadline:
+            raise TimeoutError(f"Stopped after {_BUDGET_SECONDS:.0f} s at {stage} ({done} of {total}) to stay under "
+                               "the bridge's 60 s limit; split shape_ids into smaller calls")
+
+    temps, pieces = [], []
+    others = [leaf for leaf in participants if leaf not in bounds]
+    for done, leaf in enumerate(others):
+        budget(done, len(others), "copying text and outlines")
+        pieces.extend(_painted_shapes(sources[leaf], participants[leaf][3], layer, temps))
+    groups = _disjoint_sets(bounds)
+    for done, group in enumerate(groups):
+        budget(done, len(groups), "copying fills")
+        selection = app.CreateShapeRange()
+        for leaf in group:
+            selection.Add(sources[leaf])
+        copies = selection.CopyToLayer(layer)
+        items = [copies.Item(index) for index in range(1, copies.Count + 1)]
+        if len(items) != len(group):
+            raise RuntimeError(f"CorelDRAW copied {len(items)} of {len(group)} shapes")
+        temps.extend(items)
+        if len(items) > 1:
+            combined = copies.Combine()
+            if combined is None:
+                raise RuntimeError("CorelDRAW did not combine the copies")
+            temps.append(combined)
+            pieces.append(combined)
+        else:
+            pieces.extend(items)
+    lap("copies")
+    if not pieces:
         raise ValueError("The participating objects have no painted area")
-    union = app.CreateCurve(doc)
-    union.AppendCurve(curves[0])
-    for curve in curves[1:]:
-        welded = union.WeldWith(curve)
-        if welded is not None:
-            union = welded
-    union_shape = layer.CreateCurve(union)
-    temps.append(union_shape)
-    return union, union_shape, temps
+    welds, total = 0, len(pieces) - 1
+    while len(pieces) > 1:
+        welded = []
+        for index in range(0, len(pieces) - 1, 2):
+            budget(welds, total, "welding")
+            result = pieces[index + 1].Weld(pieces[index], False, False)
+            if result is None:
+                raise RuntimeError("CorelDRAW did not return a weld result")
+            welds += 1
+            temps.append(result)
+            welded.append(result)
+        if len(pieces) % 2:
+            welded.append(pieces[-1])
+        pieces = welded
+    union = pieces[0]
+    union.Outline.SetNoOutline()
+    lap("weld")
+    return union, temps
+
+
+def _contour(shape, offset, direction, corner):
+    """A one-step contour of ``shape``, separated; returns the contour as one curve (``shape`` stays a temporary)."""
+    control_id = str(shape.StaticID)
+    effect = shape.CreateContour(_DIRECTIONS[direction], offset, 1, 0, None, None, None, 0, 0, _SQUARE_CAP,
+                                 _CORNERS[corner], _MITER_LIMIT)
+    if effect is None:
+        raise ValueError("The offset removes the whole silhouette")
+    separated = effect.Separate()
+    if separated is None:  # CorelDRAW made an empty contour: nothing is left at this inset
+        raise ValueError("The offset removes the whole silhouette")
+    generated = [item for item in (separated.Item(i) for i in range(1, separated.Count + 1))
+                 if str(item.StaticID) != control_id]
+    leaves = [leaf for item in generated for leaf in _ungrouped(item)]
+    if not leaves:
+        raise ValueError("The offset removes the whole silhouette")
+    if len(leaves) == 1:
+        return leaves[0]
+    pieces = get_connection().app.CreateShapeRange()
+    for leaf in leaves:
+        pieces.Add(leaf)
+    combined = pieces.Combine()
+    if combined is None:
+        raise RuntimeError("CorelDRAW did not combine the contour pieces")
+    return combined
+
+
+def _ungrouped(shape):
+    """The curves of a separated contour group (ungrouped), or the shape itself."""
+    if shape.Type != 7:
+        return [shape]
+    children = shape.UngroupEx()
+    return [leaf for i in range(1, children.Count + 1) for leaf in _ungrouped(children.Item(i))]
 
 
 def _inset(before, after, offset, document_unit, problems):

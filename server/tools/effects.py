@@ -112,9 +112,10 @@ def apply_contour(
         colors = [_resolve_color(app, doc, page, spec, targets) if spec is not None else None for spec in specs]
         document_offset = convert(offset, unit, unit_code)
         records, problems = [], []
+        # Resolve every shape first: each new contour group shifts the stacking indices on its layer.
+        shapes = {shape_id: _com_shape(view, entry, shape_id) for shape_id, (view, entry) in targets.items()}
         with undoable(doc, page, "MCP apply_contour"):
-            for shape_id, (view, entry) in targets.items():
-                shape = _com_shape(view, entry, shape_id)
+            for shape_id, shape in shapes.items():
                 # Dynamic pywin32 needs explicit nulls for the optional color arguments.
                 effect = shape.CreateContour(_DIRECTIONS[direction], document_offset, steps, 0,
                                              colors[1].color if colors[1] and not colors[1].none else None,
@@ -190,10 +191,11 @@ def separate_effect(
         if refused:
             raise _RefusedError(refused)
         records = []
+        # Resolve every control first: separating one effect adds shapes and shifts the stacking indices.
+        shapes = {control: _com_shape(*located[control], control) for control in dict.fromkeys(controls.values())}
         with undoable(doc, page, "MCP separate_effect") as step:
             for shape_id, control in controls.items():
-                view, entry = located[control]
-                shape = _com_shape(view, entry, control)
+                shape = shapes[control]
                 found = [shape.Effects.Item(i) for i in range(1, shape.Effects.Count + 1)
                          if shape.Effects.Item(i).Type == kind]
                 pieces = found[0].Separate()
