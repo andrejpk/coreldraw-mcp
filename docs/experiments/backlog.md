@@ -2,7 +2,7 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 0.
+Budget: 20 child-agent cycles. Used: 1.
 
 Baseline: 99 registered tools, 31 ruff errors, 33/33 MCP acceptance checks, 3/3 failure-path checks.
 
@@ -10,7 +10,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 
 | ID | Experiment | Status | Result | Merge |
 | --- | --- | --- | --- | --- |
-| E00 | Fixture/template library + fresh copies of 4 real sample files | backlog | | |
+| E00 | Fixture/template library + fresh copies of 4 real sample files | in progress | | |
 | E01 | Agent-eye usability audit: run realistic inspection/separation/recolor tasks on real sample copies using only MCP; log friction, failures, timings | backlog | | |
 | E02 | Color-setting consolidation: `set_fill` / `set_outline` (all color models, spot+tint, registration, none, fountain, copy-from-donor) on exact IDs with verified read-back; remove 8 narrow tools | backlog | | |
 | E03 | Document-wide color & plate inventory (replaces `get_color_report`, both `check_rgb_colors`): all pages/layers, nested groups, PowerClips, text runs, outlines, effects; spot type 25; printable flags; object IDs per ink; batched | backlog | | |
