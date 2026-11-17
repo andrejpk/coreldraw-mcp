@@ -36,7 +36,7 @@ Simplify where it makes sense. Merge narrow tools into fewer, more flexible ones
 
 1. `ruff check server/` must add no errors beyond the baseline of 31 errors on `claude/experiments-integration`. Compare against the baseline.
 2. `python server.py --check` passes.
-3. Keep the existing validation passing: `scripts/validation/build_accept.py` plus `accept_mcp.py` (37 checks; it renders layer proofs with Ghostscript at `C:Program Filesgsgs10.08.0bingswin64c.exe`, and `server/render_separation_proof.py` renders per-plate PNGs plus a manifest) and `accept_failure.py`. Update them when you rename or merge tools, and add checks for new behavior. Run them against fixtures in your run folder.
+3. Keep the existing validation passing: `scripts/validation/build_accept.py` plus `accept_mcp.py` (37 checks; it renders layer proofs with Ghostscript at `C:\Program Files\gs\gs10.08.0\bin\gswin64c.exe`, and `server/render_separation_proof.py` renders per-plate PNGs plus a manifest) and `accept_failure.py`. Update them when you rename or merge tools, and add checks for new behavior. Run them against fixtures in your run folder.
 4. Measure before and after: timings, tool counts, round trips, or success on the real sample copies, as relevant.
 5. Commit on `exp/<exp-id>` with a clear message. Write `docs/experiments/results/<exp-id>.md` with: hypothesis, what changed (tools added/removed/renamed), measurements, validation results, outcome (success / partial / failure), risks, and follow-up ideas.
 6. Close your documents, stop your server, and report back in under 300 words: outcome, branch, commit, tool count before and after, key measurements, and anything the orchestrator must know before merging.
