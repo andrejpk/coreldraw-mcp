@@ -1,5 +1,5 @@
 r"""Acceptance tests through the running MCP server: E08 document management, the 2026-11-17 production
-follow-up, the E17a structure cache and the E03 ink inventory.
+follow-up, the E17a structure cache, the E03 ink inventory and the E02+E05 color editing tools.
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -114,7 +114,7 @@ b_shapes = direct(lambda: doc_of(B).Pages(1).Shapes.Count)
 r = call("create_rectangle", document_path=B, x=1, y=1, width=1, height=1)
 check("mismatch: legacy edit on a non-active document refused", not r["success"] and "mismatch" in r["error"]
       and direct(lambda: doc_of(B).Pages(1).Shapes.Count) == b_shapes, r.get("error"))
-r = call("set_fill_cmyk", c=0, m=0, y=0, k=100, shape_id="1")
+r = call("create_rectangle", x=1, y=1, width=1, height=1)
 check("mismatch: legacy edit without document_path refused", not (isinstance(r, dict) and r.get("success")), r)
 r = call("get_layers", document_path=B)
 check("mismatch: legacy read naming a non-active document refused", not r["success"] and "mismatch" in r["error"])
@@ -231,15 +231,16 @@ check("inspect_shapes: document_unit is a name", shape_level["data"]["document_u
 label = [s for s in shape_level["data"]["shapes"] if s["shape_id"] == IDS["text"]][0]
 check("text runs: shape-level fill hides the mixed run (motivating finding)",
       label["fill"].get("color", {}).get("name") == "PANTONE 186 C", label["fill"])
-bad = call("copy_fill_to_text_range", document_path=DOC, page_index=1, shape_id=IDS["text"], start=2, end=9,
-           source_shape_id=IDS["donor"])
+bad = call("set_fill", document_path=DOC, page_index=1, shape_ids=[IDS["text"]], text_range=[2, 9],
+           from_shape_id=IDS["donor"])
 check("text copy: out-of-range end is rejected", not bad["success"], bad.get("error"))
-r = call("copy_fill_to_text_range", document_path=DOC, page_index=1, shape_id=IDS["text"], start=2, end=4,
-         source_shape_id=IDS["donor"])
-check("text copy: donor fill applied to whitespace range", r["success"]
-      and fmt(r["data"]["runs"]) == [(0, 6, "AB  CD", "PANTONE 186 C")], r.get("error") or fmt(r["data"]["runs"]))
+r = call("set_fill", document_path=DOC, page_index=1, shape_ids=[IDS["text"]], text_range=[2, 4],
+         from_shape_id=IDS["donor"])
+new_runs = [(x["start"], x["end"], x["text"], x["fill"].get("ink")) for x in r["data"]["shapes"][0]["runs"]]     if r["success"] else None
+check("text copy: donor fill applied to whitespace range (set_fill text_range)", r["success"]
+      and new_runs == [(0, 6, "AB  CD", "PANTONE 186 C")], r.get("error") or new_runs)
 check("targets: an edit activates its document (so undo stays in it)", active_path() == DOC)
-check("text copy: donor color includes tint", r["success"] and r["data"]["source_fill"]["color"].get("tint") == 100)
+check("text copy: donor color includes tint", r["success"] and r["data"]["color"].get("tint") == 100)
 again = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
 check("text copy: independent readback agrees", fmt(again["data"]["runs"]) == [(0, 6, "AB  CD", "PANTONE 186 C")])
 undo(DOC)
@@ -334,6 +335,7 @@ for name, spots, overprint in (("Ink B", ["PANTONE 300 C"], True), ("Hidden C", 
               inked_plates(out) if r["success"] else None)
     check(f"layer proof {name!r}: fill overprint preserved={overprint}", r["success"] and (found["overprint_fill_true"] > 0) == overprint)
     check(f"layer proof {name!r}: document and PDF settings unchanged", direct(pdf_state) == state0)
+Path(FX + r"\proof-p2.pdf").unlink(missing_ok=True)  # a rerun in the same folder must not find an old proof
 r = call("export_layer_proof_pdf", document_path=DOC, page_index=2, layer_name="Ink B", output_path=FX + r"\proof-p2.pdf")
 found = scan(FX + r"\proof-p2.pdf") if r["success"] else {}
 check("layer proof: same-named layer on page 2 publishes only page 2 ink", found.get("spots") == ["PANTONE 485 C"], found)
@@ -405,7 +407,7 @@ check("cache, out-of-band: new top-level shapes appear", r1 in ids(inv) and r2 i
 gone = edit(lambda doc, layers, named: (str(named["deep_leaf2"].StaticID), named["deep_leaf2"].Delete())[0])
 inv = mcp_inventory(ST)
 check("cache, out-of-band: a deleted nested shape disappears", gone not in ids(inv) and inv == truth(ST))
-r = call("get_shape_overprint", document_path=ST, page_index=1, shape_id=gone)
+r = call("inspect_contours", document_path=ST, page_index=1, shape_id=gone)
 check("cache, out-of-band: exact-ID read of the deleted shape fails as not found",
       not r["success"] and "not found" in r["error"], r.get("error"))
 before = ids(mcp_inventory(ST))
@@ -435,7 +437,7 @@ inv = mcp_inventory(ST)
 moved = {s["shape_id"]: s["layer"]["name"] for s in inv}
 check("cache, out-of-band: shapes swapped between layers (counts unchanged) are reported on their new layers",
       moved.get(r1) == "PowerClip" and moved.get(r2) == "Groups" and inv == truth(ST), (moved.get(r1), moved.get(r2)))
-r = call("get_shape_overprint", document_path=ST, page_index=1, shape_id=r1)
+r = call("inspect_contours", document_path=ST, page_index=1, shape_id=r1)
 check("cache, out-of-band: exact-ID read finds a moved shape", r["success"], r.get("error"))
 r = call("duplicate_shape_by_id", document_path=ST, page_index=1, shape_id=r2, unit="in", dx=0.1)
 inv = mcp_inventory(ST)
@@ -615,6 +617,251 @@ check("separation settings: real settings only, no color-set plate list",
       r["success"] and "available_plates" not in r["data"] and r["data"]["disabled_plates"] == []
       and isinstance(r["data"]["separations_enabled"], bool), r.get("error") or r.get("data"))
 for target in (INKS, ST3, EF3):
+    r = call("close_document", document_path=target, discard_changes=True)
+    check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
+# 6. Color editing: set_fill / set_outline / set_overprint / set_transparency / replace_color / undo (E02+E05) --
+SAMPLES = Path(r"C:\CorelMcpLab\samples")
+CL, CL2, KG, KN = (FX + rf"\{name}.cdr" for name in ("e02_colors", "e02_replace", "e02_kings", "e02_knights"))
+for leftover in [*Path(FX).glob("e02_*.pdf"), Path(CL), Path(CL2)]:
+    leftover.unlink(missing_ok=True)
+built = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "e02" / "build_colors.py"), FX],
+                       capture_output=True, text=True, check=False)
+E = json.loads(built.stdout.strip().splitlines()[-1]) if built.returncode == 0 and Path(CL).is_file() else {}
+check("colors: fixture built", bool(E), built.stdout[-300:] + built.stderr[-300:])
+shutil.copyfile(CL, CL2)
+shutil.copyfile(SAMPLES / "51019 - Kings High School 2021 Shirt Order - SCREENS.cdr", KG)
+shutil.copyfile(SAMPLES / "Knights Striped HEad.cdr", KN)
+for target in (CL, CL2, KG, KN):
+    r = call("open_document", path=target, activate=False)
+    check(f"colors setup: open {Path(target).name}", r["success"], r.get("error"))
+
+
+def shapes_of(path, page=1):
+    r = call("inspect_shapes", document_path=path, page_index=page)
+    assert r["success"], r
+    return {s["shape_id"]: s for s in r["data"]["shapes"]}
+
+
+def runs_of(path, shape_id):
+    r = call("inspect_text_fill_runs", document_path=path, page_index=1, shape_id=shape_id)
+    assert r["success"], r
+    return [(x["start"], x["end"], x["text"], x["fill"].get("color", {}).get("name"),
+             x["fill"].get("color", {}).get("tint")) for x in r["data"]["runs"]]
+
+
+def snapshot(path, texts=()):
+    """Everything the color tools can change: every shape record, text runs, and the ink inventory."""
+    inventory = call("get_ink_inventory", document_path=path, max_ids_per_ink=50)
+    assert inventory["success"], inventory
+    return {"shapes": shapes_of(path), "runs": {t: runs_of(path, t) for t in texts},
+            "inks": inventory["data"]["pages"]}
+
+
+def dirty(path):
+    return direct(lambda: doc_of(path).Dirty)
+
+
+def color(state, part="fill"):
+    value = state.get(part) or {}
+    value = value.get("color", value) if part == "outline" else value
+    return (value.get("ink"), value.get("kind"), value.get("tint"))
+
+
+def ink_ids(path, name):
+    r = call("get_ink_inventory", document_path=path, max_ids_per_ink=50)
+    found = [i for p in r["data"]["pages"] for i in p["inks"] if i["ink"] == name]
+    return sorted({x["id"] for i in found for x in i.get("ids", [])}, key=int), found
+
+
+# Exact-object edits.
+before = shapes_of(CL)
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["spot_fill"]], color="485 C")
+check("set_fill: spot by name without PANTONE prefix, palette reported, read back as a spot",
+      r["success"] and color(r["data"]["shapes"][0]) == ("PANTONE 485 C", "spot", 100) and r["data"].get("palette"),
+      r.get("error") or r["data"])
+after = shapes_of(CL)
+check("set_fill: independent read (inspect_shapes) agrees and nothing else changed",
+      after[E["spot_fill"]]["fill"]["color"]["name"] == "PANTONE 485 C"
+      and all(after[i] == before[i] for i in before if i != E["spot_fill"]))
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["tint60"]],
+         color={"ink": "PANTONE 485 C", "tint": 40})
+check("set_fill: spot tint", r["success"] and color(r["data"]["shapes"][0]) == ("PANTONE 485 C", "spot", 40),
+      r.get("error"))
+r = call("set_outline", document_path=CL, page_index=1, shape_ids=[E["spot_fill"]], color="PANTONE 485 C")
+out = r["data"]["shapes"][0]["outline"] if r["success"] else {}
+check("set_outline: spot outline by name stays a spot and keeps its 0.5 pt width",
+      r["success"] and color({"outline": out}, "outline") == ("PANTONE 485 C", "spot", 100) and abs(out["width_pt"] - 0.5) < 1e-3
+      and shapes_of(CL)[E["spot_fill"]]["outline"]["color"]["kind"] == "spot", r.get("error") or out)
+r = call("set_outline", document_path=CL, page_index=1, shape_ids=[E["donor"]], width=1, unit="mm")
+out = r["data"]["shapes"][0]["outline"] if r["success"] else {}
+check("set_outline: width in mm, color kept", r["success"] and abs(out["width_pt"] - 72 / 25.4) < 1e-3
+      and color({"outline": out}, "outline") == ("PANTONE 300 C", "spot", 100), r.get("error") or out)
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["rgb"]], color="registration")
+check("set_fill: registration", r["success"]
+      and color(r["data"]["shapes"][0]) == ("Registration", "registration", None), r.get("error"))
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["cmyk_red"]], from_shape_id=E["donor"])
+check("set_fill: donor fill copied (spot and tint)", r["success"]
+      and color(r["data"]["shapes"][0]) == ("PANTONE 300 C", "spot", 100), r.get("error"))
+r = call("set_outline", document_path=CL, page_index=1, shape_ids=[E["cmyk_red"]],
+         color={"from_shape_id": E["donor"], "part": "outline"})
+out = r["data"]["shapes"][0]["outline"] if r["success"] else {}
+check("set_outline: donor outline color copied, own 1 pt width kept", r["success"]
+      and color({"outline": out}, "outline") == ("PANTONE 300 C", "spot", 100) and abs(out["width_pt"] - 1) < 1e-3,
+      r.get("error") or out)
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["cmyk_red"]], color="CMYK 0/100/100/0")
+check("set_fill: CMYK", r["success"] and r["data"]["shapes"][0]["fill"]["components"] == [0, 100, 100, 0],
+      r.get("error"))
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["rgb"]], fountain={"type": "radial", "stops": [
+    {"color": "PANTONE 300 C", "position": 0}, {"color": {"ink": "485 C", "tint": 50}, "position": 50},
+    {"color": "CMYK 0/0/0/100", "position": 100}]})
+stops = [(x["position"], x["color"]["ink"], x["color"].get("tint")) for x in r["data"]["shapes"][0]["fill"]["stops"]] \
+    if r["success"] else None
+check("set_fill: radial fountain with three stops (spot tint mid stop)", r["success"]
+      and r["data"]["shapes"][0]["fill"]["type"] == "radial"
+      and stops == [(0, "PANTONE 300 C", 100), (50, "PANTONE 485 C", 50), (100, "CMYK 0/0/0/100", None)],
+      r.get("error") or stops)
+snap = shapes_of(CL)
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["donor"]], color="PANTONE 4855 X")
+check("set_fill: unknown spot fails with near matches, nothing changed", not r["success"]
+      and "Near matches" in r["error"] and "485" in r["error"] and shapes_of(CL) == snap, r.get("error"))
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["donor"]], color="CMYK 0/120/0/0")
+check("set_fill: out-of-range CMYK refused", not r["success"], r.get("error"))
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["donor"], E["locked_186"]], color="485 C")
+check("refusal: locked-layer target refuses the whole call, per object, nothing changed", not r["success"]
+      and r["data"]["refused"] == [{"id": E["locked_186"], "layer": "Locked", "reason": "on a locked layer"}]
+      and shapes_of(CL) == snap, r.get("error"))
+generated = next(i for i, s in snap.items() if s.get("effect_group_id"))
+for label, ids in (("group", [E["grouped"]]), ("effect-generated object", [generated]),
+                   ("master layer", [E["mark_186"]])):
+    r = call("set_outline", document_path=CL, page_index=1, shape_ids=ids, color="485 C", width=1)
+    check(f"refusal: {label}", not r["success"] and len(r["data"].get("refused", [])) == 1 and shapes_of(CL) == snap,
+          r.get("error") or r.get("data"))
+r = call("set_outline", document_path=CL, page_index=1, shape_ids=[E["tint60"]], color="485 C")
+check("refusal: color alone on a shape without outline (needs a width)", not r["success"]
+      and "width" in r["data"]["refused"][0]["reason"])
+r = call("set_overprint", document_path=CL, page_index=1, shape_ids=[E["donor"], E["spot_fill"]], fill=True,
+         outline=True)
+check("set_overprint: both flags read back and agree with inspect_shapes", r["success"]
+      and all(s["overprint"] == {"fill": True, "outline": True} for s in r["data"]["shapes"])
+      and shapes_of(CL)[E["donor"]]["overprint_outline"] is True, r.get("error"))
+r = call("set_overprint", document_path=CL, page_index=1, shape_ids=[E["donor"]], outline=False)
+check("set_overprint: an omitted flag is kept", r["success"]
+      and r["data"]["shapes"][0]["overprint"] == {"fill": True, "outline": False}, r.get("error"))
+r = call("set_transparency", document_path=CL, page_index=1, shape_ids=[E["donor"]], opacity=40)
+check("set_transparency: opacity 40 read back", r["success"] and r["data"]["shapes"][0]["opacity"] == 40,
+      r.get("error"))
+r = call("set_transparency", document_path=CL, page_index=1, shape_ids=[E["donor"]], opacity=100)
+check("set_transparency: 100 removes it", r["success"] and r["data"]["shapes"][0]["opacity"] == 100, r.get("error"))
+s0 = snapshot(CL, [E["text_mixed"]])
+r = call("set_fill", document_path=CL, page_index=1, shape_ids=[E["text_mixed"]], color="PANTONE 485 C")
+check("set_fill: whole text gets one fill (all runs)", r["success"]
+      and color(r["data"]["shapes"][0]) == ("PANTONE 485 C", "spot", 100), r.get("error"))
+r = call("undo", document_path=CL)
+check("undo: one step restores the text runs and every shape", r["success"]
+      and snapshot(CL, [E["text_mixed"]]) == s0, r.get("error"))
+r = call("undo", document_path=CL, steps=0)
+check("undo: steps out of range refused", not r["success"])
+
+# Custom (non-Pantone) spot from the Knights document palette, matched case-insensitively.
+kn = shapes_of(KN)
+spot_target = next(i for i, s in kn.items() if s["layer"]["printable"] and not s["layer"]["locked"]
+                   and not s["layer"]["master"] and (s.get("fill") or {}).get("color", {}).get("kind") == "spot"
+                   and not s.get("effect_group_id") and s["type"] not in (7, 6))
+r = call("set_fill", document_path=KN, page_index=1, shape_ids=[spot_target], color="rvw-bk01a")
+check("set_fill: custom spot RVW-BK01A from the document palette", r["success"]
+      and color(r["data"]["shapes"][0]) == ("RVW-BK01A", "spot", 100) and r["data"]["palette"] == "document palette",
+      r.get("error") or r.get("data"))
+
+# replace_color on a fresh copy.
+texts = [E["text_mixed"], E["text_uniform"]]
+r0 = snapshot(CL2, texts)
+mixed_runs = r0["runs"][E["text_mixed"]]
+dirty0 = dirty(CL2)
+r = call("replace_color", document_path=CL2, from_color="PANTONE 186 C", to_color="485 C")
+summary = r["data"]["summary"] if r["success"] else {}
+check("replace dry run: exact plan (4 fills, 1 outline, 3 text-fill runs, 1 text-outline run, 1 stop, 1 contour)",
+      r["success"] and {k: summary.get(k) for k in ("fill", "outline", "text_fill", "text_outline", "fountain_stop",
+                                                    "effect")}
+      == {"fill": 4, "outline": 1, "text_fill": 3, "text_outline": 1, "fountain_stop": 1, "effect": 1}, summary)
+reasons = {g["reason"]: [x["id"] for x in g["ids"]] for g in r["data"]["not_changed"]} if r["success"] else {}
+check("replace dry run: locked and master objects listed as not changed, contour objects follow their effect",
+      reasons == {"on a locked layer": [E["locked_186"]], "on a master layer (shared by every page)": [E["mark_186"]]}
+      and [x["effect_control_id"] for x in r["data"]["follows_effect"]] == [E["contour_control"]], reasons)
+tint_group = [g for g in r["data"]["changes"] if g["old"].get("tint") == 60] if r["success"] else []
+check("replace dry run: a spot tint is kept (186 C 60 % -> 485 C 60 %)",
+      len(tint_group) == 1 and tint_group[0]["new"]["tint"] == 60 and tint_group[0]["ids"] == [E["tint60"]])
+check("replace dry run: zero mutation (shapes, text runs, inventory, dirty flag)",
+      snapshot(CL2, texts) == r0 and dirty(CL2) == dirty0)
+entry186 = next(i for i in r0["inks"][0]["inks"] if i["ink"] == "PANTONE 186 C")
+r = call("replace_color", document_path=CL2, from_color=entry186, to_color="485 C", parts=["fill"])
+check("replace: an inventory ink entry is accepted as from_color", r["success"] and r["data"]["summary"]["fill"] == 4,
+      r.get("error"))
+for tolerance, expected in ((0, 0), (1, 1)):
+    r = call("replace_color", document_path=CL2, from_color="CMYK 0/100/100/0", to_color="485 C", parts=["outline"],
+             tolerance=tolerance)
+    check(f"replace: process match tolerance {tolerance} -> {expected} outline", r["success"]
+          and r["data"]["summary"]["changes"] == expected, r.get("error"))
+for args, label in (({"parts": ["fills"]}, "unknown part"), ({"pages": [2]}, "page out of range"),
+                    ({"layers": ["Nope"]}, "unknown layer"), ({"from_color": "none"}, "from none")):
+    r = call("replace_color", **{"document_path": CL2, "from_color": "186 C", "to_color": "485 C", **args})
+    check(f"replace: {label} refused", isinstance(r, list) or not r["success"], r if isinstance(r, list) else r.get("error"))
+r = call("replace_color", document_path=CL2, from_color="PANTONE 186 C", to_color="485 C", dry_run=False)
+check("replace real: one call, every change verified, only locked and master objects remain", r["success"]
+      and r["data"]["verified"] == 11 and r["data"]["remaining"]["count"] == 2
+      and sorted(x["id"] for x in r["data"]["remaining"]["ids"]) == sorted([E["locked_186"], E["mark_186"]], key=int),
+      r.get("error") or r["data"].get("verification_errors"))
+check("targets: replace_color activates its document", active_path() == CL2)
+runs_after = runs_of(CL2, E["text_mixed"])
+check("replace real: only the matching text runs changed",
+      runs_after == [(0, 2, "AB", "PANTONE 485 C", 100), (2, 4, "  ", "PANTONE 300 C", 100),
+                     (4, 6, "CD", "PANTONE 485 C", 100), (6, 9, " EF", None, None)]
+      and mixed_runs[1] == runs_after[1], runs_after)
+ids186, _ = ink_ids(CL2, "PANTONE 186 C")
+ids485, found485 = ink_ids(CL2, "PANTONE 485 C")
+check("replace real: inventory shows 186 C only on the locked and master objects, 485 C on the rest (tint 60 kept)",
+      ids186 == sorted([E["locked_186"], E["mark_186"]], key=int) and E["tint60"] in ids485
+      and E["text_mixed"] in ids485 and 60 in found485[0]["tints"], (ids186, ids485))
+r = call("undo", document_path=CL2)
+check("replace undo: one undo restores every shape, text run and the inventory", r["success"]
+      and snapshot(CL2, texts) == r0, r.get("error"))
+r = call("replace_color", document_path=CL2, from_color="PANTONE 186 C", to_color="none", parts=["outline", "text"],
+         dry_run=False)
+runs_none = runs_of(CL2, E["text_mixed"])
+check("replace to none: matching text runs lose their fill, other runs intact", r["success"]
+      and r["data"]["verified"] == 5 and runs_none[1] == mixed_runs[1] and runs_none[0][3] is None,
+      r.get("error") or runs_none)
+call("undo", document_path=CL2)
+
+# E01 T6b on a Kings copy: 186 C -> 485 C across fills, outlines and text in one call; plates prove it.
+r = call("replace_color", document_path=KG, from_color="PANTONE 186 C", to_color="PANTONE 485 C", dry_run=False)
+check("Kings T6b: one replace_color call recolors fills, outlines and text runs", r["success"]
+      and {k: r["data"]["summary"].get(k) for k in ("fill", "outline", "text_fill")}
+      == {"fill": 2, "outline": 2, "text_fill": 1}
+      and r["data"]["verified"] == 5 and r["data"]["remaining"]["count"] == 0, r.get("error") or r.get("data"))
+gone, _ = ink_ids(KG, "PANTONE 186 C")
+new, found = ink_ids(KG, "PANTONE 485 C")
+check("Kings T6b: inventory has no 186 C and 485 C on 4 objects (2 spot outlines)", not gone and len(new) == 4
+      and found[0]["parts"] == {"fill": 2, "outline": 2, "text_fill": 1}, (gone, found and found[0]["parts"]))
+pdf = FX + r"\e02_kings_p1.pdf"
+out = call("export_page_proof_pdf", document_path=KG, page_index=1, output_path=pdf)
+plates = inked_plates(pdf) if out["success"] else []
+check("Kings T6b: Ghostscript plates show PANTONE 485 C and no PANTONE 186 C", out["success"]
+      and "PANTONE 485 C" in plates and "PANTONE 186 C" not in plates, plates)
+
+
+async def _catalog():
+    async with Client("http://127.0.0.1:8765/mcp") as client:
+        return await client.list_tools()
+
+
+names = {tool.name for tool in asyncio.run(_catalog())}
+removed = {"set_fill_cmyk", "set_fill_rgb", "set_fill_pantone", "set_no_fill", "set_fountain_fill", "copy_shape_fill",
+           "set_no_outline", "set_shape_overprint", "get_shape_overprint", "copy_fill_to_text_range"}
+check("catalog: color tools consolidated", {"set_fill", "set_outline", "set_overprint", "set_transparency",
+                                            "replace_color", "undo"} <= names and not removed & names,
+      sorted(removed & names))
+for target in (CL, CL2, KG, KN):
     r = call("close_document", document_path=target, discard_changes=True)
     check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
 

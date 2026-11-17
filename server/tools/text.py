@@ -5,15 +5,13 @@ from itertools import groupby
 from core.connection import get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
-from core.targets import call_on_active, resolve_page
+from core.targets import call_on_active
 from core.units import MILLIMETER, convert
 from tools.inspection import (
     _CDR_NO_FILL,
     _CDR_UNIFORM_FILL,
-    _color_details,
     _color_query,
     _decode_queried_color,
-    _exact_shapes,
     _fill_details,
     _on_shape,
     _query,
@@ -169,55 +167,6 @@ def inspect_text_fill_runs(document_path: str, page_index: int, shape_id: str) -
         return {"text": "".join(text for text, _ in characters), "runs": _fill_runs(characters)}
 
     return _on_shape(document_path, page_index, shape_id, inspect)
-
-
-def copy_fill_to_text_range(
-    document_path: str, page_index: int, shape_id: str, start: int, end: int, source_shape_id: str,
-) -> ToolResult:
-    """Apply the uniform fill of an exact donor shape to characters [start, end) of an exact text shape.
-
-    Indices are zero-based and end-exclusive, as returned by inspect_text_fill_runs; whitespace
-    counts. Verifies that the text is unchanged, every character in the range has the donor's
-    native color (including spot tint), and characters outside the range keep their fills.
-    The edit is one undo step. Returns the resulting runs.
-    """
-    if start < 0 or end <= start:
-        return ToolResult.fail("Specify 0 <= start < end")
-
-    def copy(app, doc, shape):
-        story = _text_story(shape)
-        before = _character_fills(shape, story)
-        if end > len(before):
-            raise ValueError(f"The text has {len(before)} characters; end must not exceed it")
-        if any(fill["type"] not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL) for _, fill in before[start:end]):
-            raise ValueError("Characters in the range must have no fill or a uniform fill")
-        donor, = _exact_shapes(doc, resolve_page(doc, page_index), [source_shape_id])
-        if donor.Fill.Type != _CDR_UNIFORM_FILL:
-            raise ValueError("The donor must have a uniform fill")
-        color = donor.Fill.UniformColor.GetCopy()
-        expected = {"type": _CDR_UNIFORM_FILL, "color": _color_details(color)}
-        doc.BeginCommandGroup("Copy fill to text range")
-        try:
-            story.Range(start, end).Fill.ApplyUniformFill(color)
-        finally:
-            doc.EndCommandGroup()
-        after = _character_fills(shape, story)
-        data = {
-            "source_shape_id": source_shape_id, "start": start, "end": end,
-            "source_fill": expected, "runs": _fill_runs(after),
-        }
-        problems = []
-        if [text for text, _ in after] != [text for text, _ in before]:
-            problems.append("the text changed")
-        if any(fill != expected for _, fill in after[start:end]):
-            problems.append("a character in the range has a different fill")
-        if after[:start] != before[:start] or after[end:] != before[end:]:
-            problems.append("a character outside the range changed")
-        if problems:
-            data["verification_error"] = f"Fill copy verification failed: {'; '.join(problems)}. Undo the last step."
-        return data
-
-    return _on_shape(document_path, page_index, shape_id, copy, write=True)
 
 
 def _set_text_font(text, font: str) -> None:

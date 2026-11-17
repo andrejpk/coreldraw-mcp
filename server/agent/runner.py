@@ -91,14 +91,14 @@ def _register_tools():
         return
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from core.connection import init_connection
-    from tools import colors, data_merge, document, export, inks, layers, preflight, shapes, text
+    from tools import colors, data_merge, document, export, inks, layers, preflight, recolor, shapes, text
 
     if init_connection():
         logger.info("CorelDRAW 连接成功")
     else:
         logger.warning("CorelDRAW 连接失败，工具调用将返回错误（请确认 CorelDRAW 已启动）")
 
-    modules = [document, shapes, text, colors, inks, layers, export, preflight, data_merge]
+    modules = [document, shapes, text, colors, recolor, inks, layers, export, preflight, data_merge]
     _TOOL_REGISTRY = {}
     for mod in modules:
         for name, obj in inspect.getmembers(mod):

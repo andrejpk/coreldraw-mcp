@@ -1,4 +1,4 @@
-"""Operate on CorelDRAW effects and overprint flags using exact shape IDs."""
+"""Operate on CorelDRAW contour effects using exact shape IDs (overprint flags: tools.colors.set_overprint)."""
 
 import math
 from typing import Literal
@@ -15,37 +15,6 @@ _CDR_DIRECT_BLEND = 0
 _CDR_TENTH_MICRON = 0
 _CONTOUR_DIRECTIONS = {"inside": 0, "outside": 1, "to_center": 2}
 _DIRECTION_NAMES = {value: name for name, value in _CONTOUR_DIRECTIONS.items()}
-_OVERPRINT_PROPERTIES = {"fill": "OverprintFill", "outline": "OverprintOutline"}
-
-
-def _overprint_flags(shape):
-    return {name: bool(getattr(shape, attr)) for name, attr in _OVERPRINT_PROPERTIES.items()}
-
-
-def get_shape_overprint(document_path: str, page_index: int, shape_id: str) -> ToolResult:
-    """Read separate fill and outline overprint flags on one exact shape in an exact open document."""
-    return _on_shape(document_path, page_index, shape_id, lambda app, doc, shape: _overprint_flags(shape))
-
-
-def set_shape_overprint(
-    document_path: str, page_index: int, shape_id: str, part: Literal["fill", "outline"], enabled: bool,
-) -> ToolResult:
-    """Set one overprint flag on an exact non-group shape and read back both flags."""
-    if part not in _OVERPRINT_PROPERTIES:
-        return ToolResult.fail("part must be fill or outline")
-
-    def set_flag(app, doc, shape):
-        if shape.Type == CDR_GROUP_SHAPE:
-            raise ValueError("Use the exact ID of a child shape to change its overprint flag")
-        expected = _overprint_flags(shape)
-        expected[part] = enabled
-        setattr(shape, _OVERPRINT_PROPERTIES[part], enabled)
-        flags = _overprint_flags(shape)
-        if flags != expected:
-            flags["verification_error"] = "Overprint readback differs from the expected flags"
-        return flags
-
-    return _on_shape(document_path, page_index, shape_id, set_flag, write=True)
 
 
 def _contours(shape):

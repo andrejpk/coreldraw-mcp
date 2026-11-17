@@ -54,7 +54,7 @@
 | `document` | 7 个 | 模板打开、新建、保存、关闭、页面管理 |
 | `shapes` | 11 个 | 矩形/椭圆/线段绘制、SVG/图片导入、布尔运算 |
 | `text` | 5 个 | 文字内容替换、样式设置、溢出检测、转曲 |
-| `colors` | 8 个 | CMYK/RGB/Pantone 填色、描边、RGB 合规检测 |
+| `colors` + `recolor` | 6 个 | `set_fill`（专色名+色调、CMYK、RGB、套准色、无、渐变、取色、文字区间）、`set_outline`（专色描边、显式宽度单位）、`set_overprint`、`set_transparency`、`replace_color`（范围替换、预演、单步撤销、回读校验）、`undo` |
 | `layers` | 5 个 | 图层创建、查询、分配、显隐、锁定 |
 | `export` | 7 个 | PDF/DXF/AI/SVG/PNG 导出、视觉预览、批量导出 |
 | `preflight` | 4 个 | 尺寸检查、文字溢出、缺字体、颜色报告 |

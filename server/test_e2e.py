@@ -59,12 +59,7 @@ from tools.shapes import (
 from tools.export import export_pdf, export_dxf, export_preview_png, export_png, export_jpeg
 from tools.preflight import check_dimensions, check_text_overflow_all
 from tools.inks import get_ink_inventory
-from tools.colors import (
-    set_fill_cmyk,
-    set_fill_rgb,
-    set_fountain_fill,
-    set_transparency,
-)
+from tools.colors import set_fill, set_transparency
 from tools.layers import create_layer, assign_to_layer, get_layers
 
 
@@ -406,7 +401,8 @@ def test_step10_advanced_p1(tr: TestResult):
     r = create_rectangle(DOC.path, 10, 70, 40, 10, 0)
     if r.success:
         rect_id = r.data.get("shape_id", "")
-        result = set_fountain_fill(DOC.path, rect_id, "linear", 0, 100, 100, 0, 100, 0, 0, 0, angle=90)
+        result = set_fill(DOC.path, 1, [rect_id], fountain={"type": "linear", "angle": 90, "stops": [
+            {"color": "CMYK 0/100/100/0", "position": 0}, {"color": "CMYK 100/0/0/0", "position": 100}]})
         tr.step(f"线性渐变填充 {rect_id[:8]}", result)
     else:
         tr.skip("渐变填充测试", "无法创建测试形状")
@@ -415,7 +411,7 @@ def test_step10_advanced_p1(tr: TestResult):
     ell = create_ellipse(DOC.path, 100, 75, 10, 5)
     if ell.success:
         ell_id = ell.data.get("shape_id", "")
-        result = set_transparency(DOC.path, ell_id, 50)
+        result = set_transparency(DOC.path, 1, [ell_id], 50)
         tr.step(f"50% 透明度 {ell_id[:8]}", result)
         _test_shape_ids.append(ell_id)
     else:

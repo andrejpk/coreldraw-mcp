@@ -163,10 +163,10 @@ def verify(template):
         if want.get("effect") == "drop_shadow":
             res.setdefault("drop_shadow_effects", {})[s["name"]] = rec.get("effects")
     if template["file"] == "effects.cdr":
-        r = tool("get_shape_overprint", document_path=path, page_index=1,
-                 shape_id=next(s["shape_id"] for s in template["shapes"] if s["name"] == "op_both"))
-        res["get_shape_overprint_op_both"] = {k: r.get(k) for k in ("fill", "outline", "overprint_fill",
-                                                                     "overprint_outline") if k in r}
+        op_both = next(s["shape_id"] for s in template["shapes"] if s["name"] == "op_both")
+        r = tool("inspect_shapes", document_path=path, page_index=1, fields=["overprint_fill", "overprint_outline"])
+        record = next((x for x in r.get("shapes", []) if x["shape_id"] == op_both), {})
+        res["overprint_op_both"] = {k: record.get(k) for k in ("overprint_fill", "overprint_outline")}
     if template["file"] in ("text_runs.cdr", "structure.cdr"):
         r = tool("list_all_text_shapes", page_index=1, document_path=path)
         res["list_all_text_shapes"] = r.get("count", len(r.get("shapes", r.get("text_shapes", [])) or []))

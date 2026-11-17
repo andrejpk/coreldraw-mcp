@@ -56,7 +56,7 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 | `document` | 8 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), text listing, guidelines. Every tool takes an exact `document_path`; units are never changed |
 | `shapes` | 11 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops |
 | `text` | 5 | Text replacement, style, overflow detection, convert to curves |
-| `colors` | 8 | CMYK / RGB / Pantone fill & stroke, RGB compliance check |
+| `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
 | `layers` | 5 | Create, query, assign, show/hide, lock layers |
 | `export` | 7 | PDF / DXF / AI / SVG / PNG export, visual preview, batch export |
 | `preflight` | 4 | Size check, text overflow, missing fonts, color report |

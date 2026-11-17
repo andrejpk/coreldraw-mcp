@@ -41,6 +41,9 @@ Cache API (used by ``inspect_shapes``, the exact-ID tools and ``list_all_text_sh
 ``resolve_shapes(doc, page, shape_ids) -> list[Shape]``
     COM shape objects for exact IDs on the page's layers, through the cache, each StaticID verified. A miss
     or a mismatch forces a fresh walk before it fails.
+``locate_entries(doc, page, shape_ids) -> {id: (LayerView, Entry)}``, ``shape_range(view, entries)``
+    Entries for exact IDs without touching COM shapes, and one COM ShapeRange of many entries of one layer
+    (one ``Shapes.Range`` call per parent) for bulk edits such as ``ApplyUniformFill`` (used by the color tools).
 ``walk_layer(layer)``, ``layer_view(layer, structure)``
     An uncached structure of one COM layer (for verification after an edit), and a view of that layer for
     ``read_entries`` without a page walk.
@@ -480,6 +483,53 @@ def _locate(views, shape_ids):
                     raise ValueError(f"Ambiguous shape ID {shape_id}")
                 found[shape_id] = (view, structure.entries[structure.position[shape_id]])
     return found
+
+
+def locate_entries(doc, page, shape_ids: list[str]) -> dict:
+    """``{shape ID: (LayerView, Entry)}`` for unique exact IDs on the page's layers (master layers included), in
+    request order, from the cache. A miss forces one fresh walk before it fails. Paths are verified when read
+    (``read_entries`` raises ``StaleStructureError``; callers retry with a fresh walk)."""
+    requested = set(shape_ids)
+    if not requested or len(requested) != len(shape_ids):
+        raise ValueError("Provide one or more unique shape IDs")
+    for fresh in (False, True):
+        found = _locate(page_layers(doc, page, fresh=fresh), shape_ids)
+        if requested - found.keys() and not fresh:
+            continue
+        if missing := requested - found.keys():
+            raise ValueError(f"Shape IDs not found on requested page: {', '.join(sorted(missing, key=_id_order))}")
+        return {shape_id: found[shape_id] for shape_id in shape_ids}
+    raise StaleStructureError("The page changed while its shapes were being located; retry")
+
+
+def _id_order(shape_id):
+    return (0, int(shape_id)) if str(shape_id).isdigit() else (1, str(shape_id))
+
+
+def shape_range(view: LayerView, entries):
+    """One COM ShapeRange holding the shapes of ``entries`` (all on ``view``'s layer).
+
+    Built with one ``Shapes.Range(indices)`` call per parent (no per-shape path resolution), so bulk edits such
+    as ``ShapeRange.ApplyUniformFill`` touch thousands of shapes in one COM call. The entries must have been
+    verified in the same bridge operation (``read_entries``); a count mismatch raises ``StaleStructureError``.
+    """
+    by_parent = {}
+    for entry in entries:
+        by_parent.setdefault((entry.parent, entry.path[-1] < 0), []).append(abs(entry.path[-1]))
+    layer = view.layer
+    total = None
+    for (parent, clip), indices in by_parent.items():
+        container = layer if parent is None else resolve_path(layer, parent)
+        shapes = container.PowerClip.Shapes if clip else container.Shapes
+        for start in range(0, len(indices), 5000):
+            part = shapes.Range(indices[start:start + 5000])
+            if total is None:
+                total = part
+            else:
+                total.AddRange(part)
+    if total is None or total.Count != len(entries):
+        raise StaleStructureError("The shapes moved while a range of them was being built; retry")
+    return total
 
 
 def resolve_shapes(doc, page, shape_ids: list[str]) -> list:

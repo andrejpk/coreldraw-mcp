@@ -85,7 +85,7 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 
 - 如果 find_shape_by_name 返回 {"found": false}：检查占位符名称是否正确，或换一种命名方式重试
 - 如果文字溢出：先尝试 fit_text_to_frame，不成功则缩小字号
-- 如果颜色检查发现 RGB：用 set_fill_cmyk 转为 CMYK
+- 如果颜色检查发现 RGB：用 set_fill(color="CMYK c/m/y/k") 或 replace_color 转为 CMYK
 - 如果某条记录处理失败：记录错误原因，继续处理下一条，不要中断整个批次
 - COM 连接失败时工具会返回错误信息，重试后仍失败则跳过该操作
 

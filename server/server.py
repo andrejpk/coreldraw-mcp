@@ -66,6 +66,7 @@ def register_tools():
         layers,
         preflight,
         proof,
+        recolor,
         shapes,
         templates,
         text,
@@ -108,8 +109,6 @@ def register_tools():
     mcp.add_tool(effects.inspect_contours)
     mcp.add_tool(effects.apply_contour)
     mcp.add_tool(effects.break_contour_apart)
-    mcp.add_tool(effects.get_shape_overprint)
-    mcp.add_tool(effects.set_shape_overprint)
     mcp.add_tool(geometry.set_shape_position_exact)
     mcp.add_tool(geometry.duplicate_shape_by_id)
     mcp.add_tool(geometry.duplicate_shapes_by_id)
@@ -125,22 +124,18 @@ def register_tools():
     mcp.add_tool(text.set_text_content)
     mcp.add_tool(text.set_text_content_by_id)
     mcp.add_tool(text.inspect_text_fill_runs)
-    mcp.add_tool(text.copy_fill_to_text_range)
     mcp.add_tool(text.set_text_style)
     mcp.add_tool(text.fit_text_to_frame)
     mcp.add_tool(text.check_text_overflow)
     mcp.add_tool(text.convert_text_to_curves)
     mcp.add_tool(text.create_text_frame)
 
-    mcp.add_tool(colors.set_fill_cmyk)
-    mcp.add_tool(colors.set_fill_rgb)
-    mcp.add_tool(colors.set_fill_pantone)
-    mcp.add_tool(colors.copy_shape_fill)
+    mcp.add_tool(colors.set_fill)
     mcp.add_tool(colors.set_outline)
-    mcp.add_tool(colors.set_no_fill)
-    mcp.add_tool(colors.set_no_outline)
-    mcp.add_tool(colors.set_fountain_fill)
+    mcp.add_tool(colors.set_overprint)
     mcp.add_tool(colors.set_transparency)
+    mcp.add_tool(recolor.replace_color)
+    mcp.add_tool(colors.undo)
 
     mcp.add_tool(layers.create_layer)
     mcp.add_tool(layers.get_layers)
