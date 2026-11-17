@@ -12,6 +12,10 @@ Run from `server/` with the repo venv against a running CorelDRAW 2022. They bui
 | `parity.py <dir>\fx build\|compare` | Mixed fixture (groups, zero-width, registration, contour) batched vs direct reader parity |
 | `parity_big.py <dir>\fx` | Batched vs direct inventory parity and timings on `big_flat.cdr` (direct reads take ~20 min) |
 | `pdfscan.py <pdf>` | Dependency-free PDF check: spot separations and overprint states in inflated streams |
+| `build_templates.py <out_dir> [--profiles json] [--only a,b]` | Build the disposable template library (`C:\CorelMcpLab\templates`) and write `MANIFEST.json`/`MANIFEST.md` |
+| `profile_cdr.py <out.json> <run dir> <file.cdr>...` | Read-only profile of document copies under a run folder (layers, counts, depth, colors, text, effects, PowerClips) |
+| `verify_templates.py <manifest> <copies dir> <out.json> [file...]` | Compare template copies against the manifest through the MCP server |
+| `close_run_docs.py <run dir>` | Close only documents saved under a run folder (`Dirty=False` first) |
 | `close_mine.py` | Close only fixture documents saved under a `scratchpad` path |
 
 Results are recorded in `docs/requirements/2026-11-16-screen-separation-tools.md`.
