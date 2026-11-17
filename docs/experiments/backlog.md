@@ -2,7 +2,7 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 1 (E00).
+Budget: 20 child-agent cycles. Used: 2 (E00, E01).
 
 Baseline: 99 registered tools, 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
@@ -11,7 +11,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | ID | Experiment | Status | Result | Merge |
 | --- | --- | --- | --- | --- |
 | E00 | Fixture/template library + fresh copies of 4 real sample files | completed: success | 8 templates + MANIFEST.json/md, deterministic rebuild; 4 sample copies profiled (55 to 18,813 objects); builder/profiler/verifier scripts. Found 10 tool shortcomings (below). | merged (d930bb2) |
-| E01 | Agent-eye usability audit: run realistic inspection/separation/recolor tasks on real sample copies using only MCP; log friction, failures, timings | backlog | | |
+| E01 | Agent-eye usability audit: run realistic inspection/separation/recolor tasks on real sample copies using only MCP; log friction, failures, timings | in progress | | |
 | E02 | Color-setting consolidation: `set_fill` / `set_outline` (all color models, spot+tint, registration, none, fountain, copy-from-donor) on exact IDs with verified read-back; remove 8 narrow tools | backlog | | |
 | E03 | Document-wide color & plate inventory (replaces `get_color_report`, both `check_rgb_colors`; fixes `get_print_separation_settings` listing unused plates): all pages/layers, nested groups, PowerClip contents, text runs, outlines, effects; spot type 25; printable flags; object IDs per ink; batched. Also `inspect_shapes` descends into PowerClips and links effect groups to controls | backlog | | |
 | E04 | `find_shapes` query tool (color, type, size/zero-area, invisible, hairline, layer, text, name); replaces `find_shape_by_name`, `select_shapes`, `list_all_text_shapes` | backlog | | |
