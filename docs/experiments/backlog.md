@@ -2,9 +2,9 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729, later merged 0d4f40a).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 5 (E00, E01, E08, E17a, E03).
+Budget: 20 child-agent cycles. Used: 6 (E00, E01, E08, E17a, E03, E02+E05).
 
-Current: 96 tools, ~21.8k tokens, 29 ruff errors, acceptance 103/103 + failure 4/4.
+Current: 95 tools, ~22.2k tokens, 28 ruff errors, acceptance 134/134 + failure 4/4.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
 Status values: **backlog**, **in progress**, **completed: success | partial | failure**, **dropped**.
@@ -17,6 +17,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | E01 | Agent-eye usability audit on real sample copies, MCP only | completed: success | 381 MCP calls over 6 production tasks. Underbase build and mark move worked; save-as, spot recolor and spot outlines impossible; a page inventory on Good News took 68 calls / 746 s / 9.3 MB. 16 ranked problems, consolidation map 99 → ~35 core tools. [results](results/e01.md) | merged; `-dOverrideICC` render fix applied on integration (6fab173) |
 | E08 | Document management + exact-document targeting | completed: success | 99 → 96 tools. Added `list_documents`, `open_document`, `edit_pages`; removed `open_template`, `get_document_info`, `add_page`, `delete_page`, `set_page_size`, `switch_page`; `save_document` save-as fixed (E01 T6d: 1 call, 0 failures), `close_document` by exact path with dirty refusal. Shared `core/targets.py` + `core/units.py`; 11 forced-mm writes removed; 46 legacy edit tools require `document_path` (refuse on mismatch). Catalog 20.1k → 21.7k tokens (more params). Acceptance 84/84, failure 4/4, ruff 29. Finding: `Document.Undo` acts on the active document, so edits activate their target. [results](results/e08.md) | merged; removed unsafe `close_mine.py` |
 | E17a | Structure/ID cache + bridge timeout safety | completed: success | New `core/structure.py` validated page-structure cache (edit counter, layer fingerprints, StaticID check on every path). Good News p1 inventory 765.8 s → 39.4 s (68 calls, identical output); text runs per shape ~15 s → 0.6 s; `get_shape_overprint` 14 s → 0.5 s; `list_all_text_shapes` p1 60 s timeout + 193 s wedge → 0.46 s; big_flat 22.6 → 7.5 s. Fixed text-run batching (`TextRange.Evaluate` has no `@com`). Bridge: interruptible `read_call`, status names running tool. Acceptance 103/103, failure 4/4. [results](results/e17a.md) | merged |
+| E03 | `get_ink_inventory` + PowerClip-aware inspection | completed: success | 96 → 95 tools. New read-only `get_ink_inventory` (per page/layer, fill/outline/text runs/fountain/effects/PowerClips, printable/hidden/off-page splits, IDs per ink, plate summary, near-duplicate warnings). Removed `get_color_report`, `check_rgb_colors`; `get_print_separation_settings` reduced to real settings + `disabled_plates`. `inspect_shapes` returns PowerClip contents and effect→control links. Good News whole doc 8.4 s / 18 KB; E01 T2 redone 12 calls / 15.7 s / 77 KB (was 165 calls, 35 failed, 553 s + 9.3 MB inventory). Plates predicted = Ghostscript renders on 21/21 pages. Acceptance 134/134, ruff 28. [results](results/e03.md) | merged |
 
 ## Queue (in run order, revised after E01)
 
@@ -24,9 +25,8 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | --- | --- | --- | --- |
 | 1 | E08 | Document management + exact-document targeting: `list_documents`, `open_document`/activate (no unit change; merge `open_template`), fixed `save_document` (SaveAs options, save-as copy), `close_document(document_path)`, `edit_pages`; remove all forced `Unit = mm` writes; shared document resolver used by every tool (fail when the active doc differs from `document_path`) | completed: success |
 | 2 | E17a | Structure/ID cache + bridge timeout safety (absorbs E20): reuse page structure across paged `inspect_shapes` calls; resolve many IDs in one walk; batch text listing/runs; no read-only call may exceed the bridge timeout; status reports the running tool | completed: success |
-| 3 | E03 | `get_ink_inventory`: per page and printable layer, fills/outlines/text runs/effects/PowerClip contents, spot type 25, off-page and hidden-printable splits, locked flags, IDs per ink; replaces `get_color_report`, both `check_rgb_colors`, plate list of `get_print_separation_settings`; `inspect_shapes` descends into PowerClips | in progress |
-| 4 | E02 | `set_fill` / `set_outline` / `set_overprint`: every color model, spot by palette name + tint, registration, none, fountain, from donor; spot outlines; widths with explicit units; verified read-back; removes ~9 tools | backlog |
-| 5 | E05 | `replace_color` across fills/outlines/text runs/contours; dry run; one undo step; `undo` tool | backlog |
+| 3 | E03 | `get_ink_inventory`: per page and printable layer, fills/outlines/text runs/effects/PowerClip contents, spot type 25, off-page and hidden-printable splits, locked flags, IDs per ink; replaces `get_color_report`, both `check_rgb_colors`, plate list of `get_print_separation_settings`; `inspect_shapes` descends into PowerClips | completed: success |
+| 4 | E02+E05 | Color editing (merged E02 and E05 to save a cycle): `set_fill` / `set_outline` / `set_overprint` (every color model, spot by palette name + tint, registration, none, fountain, from donor; spot outlines; explicit width units; verified read-back) and `replace_color` across fills/outlines/text runs/fountain stops/contours with dry run and one undo step; `undo` tool; removes ~10 tools | in progress |
 | 6 | E10 | Plate feedback: proof + Ghostscript render with registration-aware masks, per-plate bbox/coverage, object attribution, hidden-printable warning; `export_layer_proof_pdf` folded into `export_page_proof_pdf(layer_name=…)` | backlog |
 | 7 | E04+E11 | `find_shapes` with filters and artifact presets (zero-size, invisible, stacked duplicates, off-page, hairline, spot:<name>, Trans. White, text); replaces `find_shape_by_name`, `select_shapes`, `list_all_text_shapes`, `check_text_overflow_all` | backlog |
 | 8 | E13 | `offset_silhouette` (copy + weld + contour + break apart + target layer + overprint, exclusions by color) and `combine_shapes` (weld/trim/intersect/combine, keep sources, target layer) | backlog |
@@ -42,6 +42,14 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | — | spare | 1 cycle held for a fix-up or re-run | — |
 
 ## Findings feeding later experiments
+
+### Open follow-ups from completed experiments
+
+- E03: `speck_with_ink` (< 0.1 mm) flags 11,597 objects on Good News p1; tune or move to `find_shapes` presets (E04+E11).
+- E03: `FindShapes(Empty…)` counts only unnamed shapes, so E17a's recursive-count/newest-ID cache checks are blind on named shapes; container/group counts still catch nested edits. Revisit the fingerprint (E04+E11 or spare).
+- E03: PowerClip contents get new StaticIDs on reopen; effect-generated objects now resolve by ID but CorelDRAW may refuse edits.
+- E03: `import_svg` / `import_image` call nonexistent `doc.Import` (broken) (E06 or E16).
+- E08: edits activate their target document (Undo hazard); `test_e2e.py` updated but not run.
 
 ### From E00
 
