@@ -20,20 +20,18 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
 
 ## 工具层架构约定（添加/修改工具时必须遵守）
 
-1. **工具是裸函数**，不用 `@mcp.tool()` 装饰器。由 `server/server.py` 的 `register_tools()` 统一 `mcp.add_tool()`。
+1. **工具是裸函数**，不用 `@mcp.tool()` 装饰器。由 `server/server.py` 的 `register_tools()` 用 `add(module.fn, hints)` 统一注册（无 output schema、精简的 input schema、MCP annotations：`READ` / `ADDS` / `ADDS_SAME` / `SETS`）。
 2. **所有工具返回 `ToolResult`**（`from core.models import ToolResult`），用 `ToolResult.ok()` / `ToolResult.fail()` 构建。
-3. **统一模式**：
+3. **统一模式**（E19）：桥接结果统一交给 `core/results.py` 的 `respond()`（失败时 `data.state` + 目标文档/页；`refused`、`verification_error(s)` 自动转为失败）：
    ```python
-   def tool_name(param: type) -> ToolResult:
+   def tool_name(document_path: str, page_index: int) -> ToolResult:
        conn = get_connection()
-       if not conn.status.connected:
-           return ToolResult.fail("CorelDRAW 未连接")
-       result = conn.safe_call(lambda: actual_com_work())
-       if result["success"]: return ToolResult.ok(...)
-       return ToolResult.fail(result.get("error", "失败"))
+       result = conn.safe_call(lambda: actual_com_work())   # 只读用 conn.read_call
+       return respond(result, document_path=document_path, page_index=page_index)
    ```
-4. **所有工具注册在 `server.py`**，新增工具必须同时在该文件加 `mcp.add_tool()`。
-5. **函数 docstring 即 MCP 工具描述**，会被 Agent 看到，写清楚参数含义。
+   连接检查、重新连接与超时处理由 `safe_call` 统一管理。不要用缓存的 `conn.status` 拦截工具，也不要重试可能已写入的操作。不要写静默的 `except Exception: pass`：逐对象报告失败（`warnings`、`failed`、`unreadable`），或让错误上抛。所有面向 Agent 的消息用英文，单位用名称（`"in"`、`"mm"`），不要用整数代码。
+4. **所有工具注册在 `server.py`**，新增工具必须同时在该文件加 `add(...)`，并让 `scripts/validation/catalog_size.py --budget`（`accept_mcp.py` 也会检查）保持在预算内。
+5. **函数 docstring 即 MCP 工具描述**，会被 Agent 看到：英文、简短，写清做什么、关键参数与单位、返回什么、何时用它而不是相近的工具。共享约定（document_path、page_index、shape_ids、单位、颜色规格、拒绝规则、错误格式）写在 `server.py` 的 `INSTRUCTIONS` 里，颜色规格的完整写法在 `set_fill` 的 docstring 里，其他工具写 "color spec (see set_fill)"。
 6. **COM 常量是硬编码整数**（`cdrDXF=86`, `cdrPNG=776`, `cdrMillimeter=3`, `cdrTextShape=3` 等）。这些常量来自 CorelDRAW 类型库，只有 Windows 上运行 `makepy` 才能生成类型存根，不要试图从 `win32com.client.constants` 导入。
 
 ## 已知的代码重复与特殊处理

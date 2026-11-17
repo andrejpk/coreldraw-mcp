@@ -503,6 +503,11 @@ def _locate(views, shape_ids):
     return found
 
 
+def _missing_message(page, missing):
+    return (f"Shape IDs not found on page {page.Index}: {', '.join(missing)}. IDs are StaticIDs of this page "
+            "(master layers included); get current ones from find_shapes or inspect_shapes")
+
+
 def locate_entries(doc, page, shape_ids: list[str]) -> dict:
     """``{shape ID: (LayerView, Entry)}`` for unique exact IDs on the page's layers (master layers included), in
     request order, from the cache. A miss forces one fresh walk before it fails. Paths are verified when read
@@ -515,7 +520,7 @@ def locate_entries(doc, page, shape_ids: list[str]) -> dict:
         if requested - found.keys() and not fresh:
             continue
         if missing := requested - found.keys():
-            raise ValueError(f"Shape IDs not found on requested page: {', '.join(sorted(missing, key=_id_order))}")
+            raise ValueError(_missing_message(page, sorted(missing, key=_id_order)))
         return {shape_id: found[shape_id] for shape_id in shape_ids}
     raise StaleStructureError("The page changed while its shapes were being located; retry")
 
@@ -569,6 +574,6 @@ def resolve_shapes(doc, page, shape_ids: list[str]) -> list:
             shapes[shape_id] = shape
         else:
             if missing := requested - shapes.keys():
-                raise ValueError(f"Shape IDs not found on requested page: {', '.join(sorted(missing))}")
+                raise ValueError(_missing_message(page, sorted(missing, key=_id_order)))
             return [shapes[shape_id] for shape_id in shape_ids]
     raise StaleStructureError("The page changed while its shapes were being located; retry")

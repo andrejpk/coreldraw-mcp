@@ -85,19 +85,18 @@ def offset_silhouette(
     name: str | None = None,
     corner: Literal["miter", "round", "bevel"] = "miter",
 ) -> ToolResult:
-    """One new shape from the welded painted area of exact objects, offset inside (choke) or outside (spread).
+    """Make one new shape from the welded painted area of exact objects, offset inside (choke) or outside
+    (spread), e.g. an underbase. One undo step, read back.
 
     Fills, outline strokes and text (converted on copies) are welded across layers and groups; holes stay
-    open. offset in unit (0 = none), CorelDRAW contour geometry, corner miter|round|bevel. exclude_colors:
-    color specs as in set_fill; objects whose fill, outline or any text run matches are skipped (listed;
-    specs that matched nothing are in exclude_unmatched). color: result fill (default: the first object's
-    fill); overprint_fill; name. target_layer: editable layer of this page (default: the first object's
-    layer); the result goes behind the backmost object there. keep_sources=false deletes the participants.
-    Refuses bitmaps, PowerClips, master-layer objects, effect groups and effect-generated objects (pass the
-    control shape, or separate_effect first). One undo step. Fills are fast (100 in ~6 s); outlined objects
-    and text cost ~0.3 s each, and a call that runs past 35 s is undone (split shape_ids).
-    Returns result_id, layer, area (holes subtracted), bounds, silhouette (before the offset), offset
-    achieved (mean = area change / perimeter; min per side; in unit), participants, skipped, fill, seconds.
+    open. offset in unit (0 = none), contour geometry. exclude_colors: color specs (see set_fill); objects
+    whose fill, outline or any text run matches are skipped (unmatched specs: exclude_unmatched). color: the
+    result fill (default: the first object's). target_layer: editable layer of this page (default: the first
+    object's); the result goes behind the backmost object there. keep_sources=false deletes the participants.
+    Refuses bitmaps, PowerClips and effect groups (pass the control shape, or separate_effect first). Fills are
+    fast (100 in ~6 s); outlines and text cost ~0.3 s each; past 35 s the call undoes itself (split shape_ids).
+    Returns result_id, layer, area, bounds, the offset achieved (mean and min per side, in unit),
+    participants, skipped and fill.
     """
     if unit not in MEASUREMENT_UNITS:
         return ToolResult.fail(f"unit must be one of {', '.join(MEASUREMENT_UNITS)}")

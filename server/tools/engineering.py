@@ -1,12 +1,27 @@
-"""工程图工具 — 标题栏填充、工程图框架组装"""
+"""Engineering drawings: fill title blocks and assemble a design into a drawing frame template."""
 
 import os
 
-from core.connection import get_connection
+from core.connection import error_text, get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.results import respond
 from core.targets import private_document, save_as
 
+_FIELDS = ("project_name", "order_no", "part_no", "designer", "material", "finish", "scale", "sheet_no", "revision")
+
+
+def _fill_fields(pages, fields: dict, replaced: dict, failed: dict) -> None:
+    """Set each top-level text shape named like a field key ("title_project_name"...) to the field's value."""
+    for page in pages:
+        for shape in page.Shapes:
+            if shape.Type != CDR_TEXT_SHAPE or shape.Name not in fields or shape.Name in replaced:
+                continue
+            try:
+                shape.Text.Story.Text = str(fields[shape.Name])
+                replaced[shape.Name] = str(fields[shape.Name])
+            except Exception as exc:
+                failed[shape.Name] = error_text(exc)
 
 
 def populate_title_block(
@@ -22,79 +37,38 @@ def populate_title_block(
     revision: str = "A",
     output_path: str = "",
 ) -> ToolResult:
-    """填充工程图标题栏。打开工程图 CDR 模板，按参数替换标题栏各字段文字形状，
-    保存到 output_path（省略则覆盖原文件）。形状名称须与字段名一致（如 title_project_name）。"""
+    """Fill the title block of an engineering drawing template: text shapes named title_<field> (e.g.
+    title_project_name) on any page get the non-empty values. Saves to output_path (default: overwrite the
+    template). Returns replaced, not_found and failed fields."""
     conn = get_connection()
-
     if not os.path.isfile(template_path):
-        return ToolResult.fail(f"模板文件不存在: {template_path}")
-
+        return ToolResult.fail(f"Template not found: {template_path}")
     save_path = output_path or template_path
-
-    fields = {
-        "title_project_name": project_name,
-        "title_order_no": order_no,
-        "title_part_no": part_no,
-        "title_designer": designer,
-        "title_material": material,
-        "title_finish": finish,
-        "title_scale": scale,
-        "title_sheet_no": sheet_no,
-        "title_revision": revision,
-    }
-    # 只写非空字段
-    fields = {k: v for k, v in fields.items() if v}
+    values = dict(zip(_FIELDS, (project_name, order_no, part_no, designer, material, finish, scale, sheet_no,
+                                revision), strict=True))
+    fields = {f"title_{key}": value for key, value in values.items() if value}
 
     def _populate():
         with private_document(conn.app, template_path) as doc:
-            page = doc.ActivePage
-            replaced = {}
-            skipped = []
-
-            for s in page.Shapes:
-                try:
-                    if s.Type == CDR_TEXT_SHAPE and s.Name in fields:
-                        s.Text.Story = str(fields[s.Name])
-                        replaced[s.Name] = str(fields[s.Name])
-                except Exception:
-                    skipped.append(s.Name)
-
-            # 遍历所有页（工程图可能多页）
-            for pg in doc.Pages:
-                if pg.Index == page.Index:
-                    continue
-                try:
-                    for s in pg.Shapes:
-                        if s.Type == CDR_TEXT_SHAPE and s.Name in fields and s.Name not in replaced:
-                            try:
-                                s.Text.Story = str(fields[s.Name])
-                                replaced[s.Name] = str(fields[s.Name])
-                            except Exception:
-                                skipped.append(s.Name)
-                except Exception:
-                    pass
-
+            replaced, failed = {}, {}
+            # The active page first, then the other pages (a drawing may have several).
+            pages = [doc.ActivePage] + [page for page in doc.Pages if page.Index != doc.ActivePage.Index]
+            _fill_fields(pages, fields, replaced, failed)
             dirpath = os.path.dirname(save_path)
             if dirpath:
                 os.makedirs(dirpath, exist_ok=True)
             save_as(conn.app, doc, save_path)
-        not_found = [k for k in fields if k not in replaced]
-        return {
-            "output": save_path,
-            "replaced": replaced,
-            "not_found": not_found,
-            "skipped": skipped,
-        }
+        return {"output": save_path, "replaced": replaced,
+                "not_found": [key for key in fields if key not in replaced and key not in failed], "failed": failed}
 
     result = conn.safe_call(_populate)
     if result["success"]:
         r = result["result"]
-        cnt = len(r["replaced"])
-        msg = f"标题栏填充完成: {cnt} 个字段 → {save_path}"
+        message = f"Filled {len(r['replaced'])} title block fields in {save_path}"
         if r["not_found"]:
-            msg += f"，{len(r['not_found'])} 个字段未找到形状: {r['not_found']}"
-        return ToolResult.ok(msg, **r)
-    return ToolResult.fail(result.get("error", "标题栏填充失败"))
+            message += f"; no shape for {r['not_found']}"
+        return ToolResult.ok(message, **r)
+    return respond(result)
 
 
 def assemble_engineering_drawing(
@@ -103,60 +77,32 @@ def assemble_engineering_drawing(
     output_path: str,
     title_block_fields: dict = None,
 ) -> ToolResult:
-    """将设计文件嵌入工程图框架模板，生成完整工程图 CDR 文件。
-    先填充标题栏，再导入设计文件内容到框架的 design_zone 图层/形状区域。
-    title_block_fields 为标题栏字段字典，键名与 populate_title_block 参数一致。"""
+    """Make an engineering drawing: open a frame template privately, fill its title block (title_block_fields
+    keys as populate_title_block parameters), import the design file and save as output_path."""
     conn = get_connection()
-
     if not os.path.isfile(design_path):
-        return ToolResult.fail(f"设计文件不存在: {design_path}")
+        return ToolResult.fail(f"Design file not found: {design_path}")
     if not os.path.isfile(frame_template_path):
-        return ToolResult.fail(f"工程图框架模板不存在: {frame_template_path}")
-
-    fields = title_block_fields or {}
+        return ToolResult.fail(f"Frame template not found: {frame_template_path}")
+    given = title_block_fields or {}
+    defaults = {"scale": "1:1", "revision": "A"}
+    fields = {f"title_{key}": given.get(key, defaults.get(key, "")) for key in _FIELDS}
+    fields = {key: value for key, value in fields.items() if value}
 
     def _assemble():
-        # 打开工程图框架
         with private_document(conn.app, frame_template_path) as doc:
-            page = doc.ActivePage
-
-            # 填充标题栏
-            replaced_fields = {}
-            field_map = {
-                "title_project_name": fields.get("project_name", ""),
-                "title_order_no": fields.get("order_no", ""),
-                "title_part_no": fields.get("part_no", ""),
-                "title_designer": fields.get("designer", ""),
-                "title_material": fields.get("material", ""),
-                "title_finish": fields.get("finish", ""),
-                "title_scale": fields.get("scale", "1:1"),
-                "title_sheet_no": fields.get("sheet_no", ""),
-                "title_revision": fields.get("revision", "A"),
-            }
-            for s in page.Shapes:
-                try:
-                    if s.Type == CDR_TEXT_SHAPE and s.Name in field_map and field_map[s.Name]:
-                        s.Text.Story = str(field_map[s.Name])
-                        replaced_fields[s.Name] = field_map[s.Name]
-                except Exception:
-                    pass
-
-            # 导入设计文件到框架
+            replaced, failed = {}, {}
+            _fill_fields([doc.ActivePage], fields, replaced, failed)
             doc.Import(design_path)
-
             dirpath = os.path.dirname(output_path)
             if dirpath:
                 os.makedirs(dirpath, exist_ok=True)
             save_as(conn.app, doc, output_path)
-        return {
-            "output": output_path,
-            "design_imported": design_path,
-            "frame_used": frame_template_path,
-            "title_block_filled": replaced_fields,
-        }
+        data = {"output": output_path, "design_imported": design_path, "frame_used": frame_template_path,
+                "title_block_filled": replaced}
+        return {**data, "title_block_failed": failed} if failed else data
 
     result = conn.safe_call(_assemble)
     if result["success"]:
-        r = result["result"]
-        return ToolResult.ok(f"工程图已组装: {output_path}", **r)
-    return ToolResult.fail(result.get("error", "工程图组装失败"))
+        return ToolResult.ok(f"Assembled the drawing: {output_path}", **result["result"])
+    return respond(result)

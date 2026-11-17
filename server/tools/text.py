@@ -1,10 +1,11 @@
-"""文字处理工具 — 替换文字内容、样式设置、溢出检查、创建文本框"""
+"""Text tools: replace content, style, fit and overflow of text shapes, create paragraph text, read fill runs."""
 
 from itertools import groupby
 
-from core.connection import get_connection
+from core.connection import error_text, get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.results import respond
 from core.targets import call_on_active
 from core.units import MILLIMETER, convert
 from tools.inspection import (
@@ -22,69 +23,46 @@ _ALIGNMENT_MAP = {"left": 0, "center": 3, "right": 1, "none": 0}
 
 
 def _find_text_shape(shape_id: str):
-    """查找文字形状，确保是文字类型"""
-    conn = get_connection()
-    doc = conn.app.ActiveDocument
+    """The text shape named or numbered shape_id on the active page of the active document (top level)."""
+    doc = get_connection().app.ActiveDocument
     if doc is None:
-        return None
+        raise RuntimeError("CorelDRAW has no active document; open one with open_document")
     target = str(shape_id)
-    try:
-        shapes = doc.ActivePage.Shapes
+    match = next((shape for shape in doc.ActivePage.Shapes if str(shape.StaticID) == target or shape.Name == target),
+                 None)
+    if match is None:
+        raise ValueError(f"No text shape {target!r} (StaticID or name) at the top level of the active page; "
+                         "use set_text_content_by_id for exact IDs, or find_shapes")
+    if match.Type != CDR_TEXT_SHAPE:
+        raise ValueError(f"Shape {target!r} is not text")
+    return match
+
+
+def _first_working(label: str, attempts) -> None:
+    """Run the first accessor that works (COM text APIs differ between CorelDRAW versions); raise if none does."""
+    errors = []
+    for attempt in attempts:
         try:
-            shape = shapes(shape_id)
-        except Exception:
-            for s in shapes:
-                try:
-                    if str(s.StaticID) == target or s.Name == target:
-                        shape = s
-                        break
-                except Exception:
-                    continue
-            else:
-                return None
-        try:
-            if shape.Type == CDR_TEXT_SHAPE:
-                return shape
-        except Exception:
-            pass
-        try:
-            _ = shape.Text
-        except Exception:
-            return None
-        return shape
-    except Exception:
-        return None
+            attempt()
+            return
+        except Exception as exc:
+            errors.append(error_text(exc))
+    raise RuntimeError(f"Could not set {label}: {'; '.join(errors)}")
 
 
 def _get_text_content(text) -> str:
-    for getter in (
-        lambda: text.Contents,
-        lambda: text.GetContents(),
-        lambda: text.Story.Text,
-        lambda: text.Story,
-    ):
-        try:
-            value = getter()
-            if isinstance(value, str):
-                return value
-        except Exception:
-            continue
-    return ""
+    try:
+        return text.Story.Text
+    except Exception:
+        return text.Contents  # older versions
 
 
 def _set_text_content(text, content: str) -> None:
-    for setter in (
+    _first_working("the text content", (
         lambda: setattr(text.Story, "Text", content),
         lambda: setattr(text, "Contents", content),
         lambda: text.SetContents(2, content),
-        lambda: setattr(text, "Story", content),
-    ):
-        try:
-            setter()
-            return
-        except Exception:
-            continue
-    raise RuntimeError("当前 CorelDRAW 版本不支持已知的文字内容写入 API")
+    ))
 
 
 def set_text_content_by_id(document_path: str, page_index: int, shape_id: str, content: str) -> ToolResult:
@@ -170,71 +148,36 @@ def inspect_text_fill_runs(document_path: str, page_index: int, shape_id: str) -
 
 
 def _set_text_font(text, font: str) -> None:
-    for setter in (
-        lambda: setattr(text.Story, "Font", font),
-        lambda: setattr(text.FontProperties, "Name", font),
-    ):
-        try:
-            setter()
-            return
-        except Exception:
-            continue
+    _first_working("the font", (lambda: setattr(text.Story, "Font", font),
+                                lambda: setattr(text.FontProperties, "Name", font)))
 
 
 def _set_text_size(text, size: float) -> None:
-    for setter in (
-        lambda: setattr(text.Story, "Size", size),
-        lambda: setattr(text.FontProperties, "Size", size),
-    ):
-        try:
-            setter()
-            return
-        except Exception:
-            continue
+    _first_working("the size", (lambda: setattr(text.Story, "Size", size),
+                                lambda: setattr(text.FontProperties, "Size", size)))
 
 
 def _set_text_bold(text, bold: bool) -> None:
-    for setter in (
-        lambda: setattr(text.Story, "Bold", bold),
-        lambda: setattr(text.FontProperties, "Bold", bold),
-    ):
-        try:
-            setter()
-            return
-        except Exception:
-            continue
-
-
-def _apply_default_text_style(shape, frame_height: float) -> None:
-    text = shape.Text
-    size = max(8.0, min(18.0, frame_height * 0.55))
-    _set_text_size(text, size)
-    try:
-        shape.Fill.UniformColor.CMYKAssign(0, 0, 0, 100)
-    except Exception:
-        pass
+    _first_working("bold", (lambda: setattr(text.Story, "Bold", bold),
+                            lambda: setattr(text.FontProperties, "Bold", bold)))
 
 
 def set_text_content(document_path: str, shape_id: str, content: str) -> ToolResult:
-    """替换文字形状的文本内容。shape_id 为形状名称或 ID。
-
-    Active document only (document_path); lengths in document units.
-    """
+    """Replace the content of a text shape on the active page, found by StaticID or name. document_path must be
+    active; for exact pages use set_text_content_by_id."""
     conn = get_connection()
 
     def _set():
         shape = _find_text_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到文字形状: {shape_id}")
         old_content = _get_text_content(shape.Text)
         _set_text_content(shape.Text, content)
-        text_type = "段落文字" if shape.Text.Type == _CDR_PARAGRAPH_TEXT else "美术字"
+        text_type = "paragraph" if shape.Text.Type == _CDR_PARAGRAPH_TEXT else "artistic"
         return {"shape_id": shape_id, "old_content": old_content, "new_content": content, "text_type": text_type}
 
     result = call_on_active(conn, document_path, _set)
     if result["success"]:
-        return ToolResult.ok(f"文字已替换: '{result['result']['old_content']}' → '{content}'", **result["result"])
-    return ToolResult.fail(result.get("error", "替换文字失败"))
+        return ToolResult.ok(f"Replaced the text of {shape_id}", **result["result"])
+    return respond(result, document_path=document_path)
 
 
 def set_text_style(
@@ -246,114 +189,97 @@ def set_text_style(
     italic: bool = False,
     alignment: str = "",
 ) -> ToolResult:
-    """设置文字形状的样式：字体、字号、粗体、斜体、对齐。
-
-    Active document only (document_path); lengths in document units.
-    """
+    """Set the font, size (pt), bold, italic and/or alignment (left, center, right) of a text shape on the active
+    page, found by StaticID or name. document_path must be active. Returns changes and any that failed."""
     conn = get_connection()
 
     def _style():
         shape = _find_text_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到文字形状: {shape_id}")
-        changes = {}
         text = shape.Text
+        steps = []
         if font:
-            _set_text_font(text, font)
-            changes["font"] = font
+            steps.append(("font", font, lambda: _set_text_font(text, font)))
         if size > 0:
-            _set_text_size(text, size)
-            changes["size"] = size
+            steps.append(("size", size, lambda: _set_text_size(text, size)))
         if bold:
-            _set_text_bold(text, True)
-            changes["bold"] = True
+            steps.append(("bold", True, lambda: _set_text_bold(text, True)))
         if italic:
+            steps.append(("italic", True, lambda: setattr(text.FontProperties, "Italic", True)))
+        if alignment:
+            if alignment not in _ALIGNMENT_MAP:
+                raise ValueError("alignment must be left, center, right or none")
+            steps.append(("alignment", alignment, lambda: setattr(text, "Alignment", _ALIGNMENT_MAP[alignment])))
+        if not steps:
+            raise ValueError("Pass at least one of font, size, bold, italic or alignment")
+        changes, failed = {}, {}
+        for name, value, apply in steps:
             try:
-                text.FontProperties.Italic = True
-                changes["italic"] = True
-            except Exception:
-                pass
-        if alignment and alignment in _ALIGNMENT_MAP:
-            try:
-                text.Alignment = _ALIGNMENT_MAP[alignment]
-                changes["alignment"] = alignment
-            except Exception:
-                pass
-        if not changes:
-            raise ValueError("未指定任何样式变更")
-        return {"shape_id": shape_id, "changes": changes}
+                apply()
+                changes[name] = value
+            except Exception as exc:
+                failed[name] = error_text(exc)
+        data = {"shape_id": shape_id, "changes": changes}
+        if failed:
+            data["failed"] = failed
+            if not changes:
+                data["verification_error"] = f"No style change was applied: {failed}"
+        return data
 
     result = call_on_active(conn, document_path, _style)
-    if result["success"]:
-        changes = result["result"]["changes"]
-        return ToolResult.ok(f"文字样式已更新: {changes}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置文字样式失败"))
+    if result["success"] and "verification_error" not in result["result"]:
+        data = result["result"]
+        message = f"Text style updated: {', '.join(data['changes'])}"
+        if data.get("failed"):
+            message += f"; failed: {', '.join(data['failed'])}"
+        return ToolResult.ok(message, **data)
+    return respond(result, document_path=document_path)
 
 
 def fit_text_to_frame(document_path: str, shape_id: str) -> ToolResult:
-    """将段文字自适应到文本框大小（仅对段落文字有效）。
-
-    Active document only (document_path); lengths in document units.
-    """
+    """Fit paragraph text to its frame (found by StaticID or name on the active page). document_path must be
+    active."""
     conn = get_connection()
 
     def _fit():
         shape = _find_text_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到文字形状: {shape_id}")
         if shape.Text.Type != _CDR_PARAGRAPH_TEXT:
-            raise ValueError(f"只能对段落文字使用自适应，当前类型: {shape.Text.Type}")
+            raise ValueError("Only paragraph text fits a frame; this shape is artistic text")
         shape.Text.FitTextToFrame = True
         return {"shape_id": shape_id, "fitted": True}
 
-    result = call_on_active(conn, document_path, _fit)
-    if result["success"]:
-        return ToolResult.ok(f"文字已自适应到文本框", **result["result"])
-    return ToolResult.fail(result.get("error", "文字自适应失败"))
+    return respond(call_on_active(conn, document_path, _fit), "Fitted the text to its frame",
+                   document_path=document_path)
 
 
 def check_text_overflow(shape_id: str, document_path: str = "") -> ToolResult:
-    """检查文字是否超出文本框（溢出）。返回溢出状态。
-
-    Reads the active document.
-    """
+    """Check whether paragraph text (by StaticID or name, active page) overflows its frame. Reads the active
+    document (document_path, if given, must be active)."""
     conn = get_connection()
 
     def _check():
         shape = _find_text_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到文字形状: {shape_id}")
         text_type = shape.Text.Type
-        overflowing = False
+        data = {"shape_id": shape_id, "overflowing": False,
+                "text_type": "paragraph" if text_type == _CDR_PARAGRAPH_TEXT else "artistic",
+                "content_length": len(_get_text_content(shape.Text))}
         if text_type == _CDR_PARAGRAPH_TEXT:
+            # The property name differs between versions.
             try:
-                overflowing = shape.Text.Overflows
+                data["overflowing"] = bool(shape.Text.Overflows)
             except Exception:
-                try:
-                    overflowing = shape.Text.IsOverflowing
-                except Exception:
-                    pass
-        content_length = 0
-        content_length = len(_get_text_content(shape.Text))
-        return {
-            "shape_id": shape_id,
-            "overflowing": overflowing,
-            "text_type": "paragraph" if text_type == _CDR_PARAGRAPH_TEXT else "artistic",
-            "content_length": content_length,
-        }
+                data["overflowing"] = bool(shape.Text.IsOverflowing)
+        return data
 
     result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
-        status = "溢出" if result["result"]["overflowing"] else "正常"
-        return ToolResult.ok(f"文字状态: {status}", **result["result"])
-    return ToolResult.fail(result.get("error", "检查文字溢出失败"))
+        status = "overflows" if result["result"]["overflowing"] else "fits"
+        return ToolResult.ok(f"The text {status}", **result["result"])
+    return respond(result, document_path=document_path)
 
 
 def create_text_frame(document_path: str, x: float, y: float, width: float, height: float, text: str) -> ToolResult:
-    """创建段落文本框。返回形状 ID。
-
-    Active document only (document_path); x, y, width, height in mm.
-    """
+    """Create paragraph text in a frame on the active layer of the active page; x, y, width, height in mm.
+    document_path must be active. Returns shape_id."""
     conn = get_connection()
 
     def _create():
@@ -362,20 +288,19 @@ def create_text_frame(document_path: str, x: float, y: float, width: float, heig
         left, top, right, bottom = (convert(value, MILLIMETER, doc.Unit, conn.app)
                                     for value in (x, y, x + width, y + height))
         shape = layer.CreateParagraphText(left, top, right, bottom, text)
-        _apply_default_text_style(shape, height)
+        warnings = []
+        # Default style: a size that fits the frame height, black text.
+        size = max(8.0, min(18.0, height * 0.55))
+        for label, apply in (("size", lambda: _set_text_size(shape.Text, size)),
+                             ("black fill", lambda: shape.Fill.UniformColor.CMYKAssign(0, 0, 0, 100))):
+            try:
+                apply()
+            except Exception as exc:
+                warnings.append(f"default {label} not applied: {error_text(exc)}")
         shape.Name = f"text_{shape.StaticID}"
-        return {
-            "shape_id": str(shape.StaticID),
-            "name": shape.Name,
-            "width": width,
-            "height": height,
-            "x": x,
-            "y": y,
-            "unit": "mm",
-            "content": text,
-        }
+        data = {"shape_id": str(shape.StaticID), "name": shape.Name, "width": width, "height": height, "x": x,
+                "y": y, "unit": "mm", "content": text}
+        return {**data, "warnings": warnings} if warnings else data
 
-    result = call_on_active(conn, document_path, _create)
-    if result["success"]:
-        return ToolResult.ok(f"文本框创建成功: {width}×{height}", **result["result"])
-    return ToolResult.fail(result.get("error", "创建文本框失败"))
+    return respond(call_on_active(conn, document_path, _create), f"Created a {width} x {height} mm text frame",
+                   document_path=document_path)

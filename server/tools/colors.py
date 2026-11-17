@@ -15,6 +15,7 @@ from typing import Literal
 from core import colorspec
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import respond
 from core.structure import (
     CONTAINER_TYPES,
     StaleStructureError,
@@ -95,18 +96,7 @@ def _edit(document_path, page_index, shape_ids, body) -> ToolResult:
         finally:
             invalidate(actual_path)
 
-    result = conn.safe_call(run)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if "refused" in data:
-        count = len(data["refused"])
-        return ToolResult(success=False, data=data,
-                          error=f"{count} of {len(shape_ids)} targets cannot be edited (see refused); nothing changed")
-    if data.get("verification_errors"):
-        return ToolResult(success=False, data=data, error=f"Read-back differs on {len(data['verification_errors'])} "
-                                                          "objects; the edit is one undo step (undo)")
-    return ToolResult.ok(**data)
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
 
 
 def _by_view(targets):
@@ -344,22 +334,17 @@ def set_fill(
     from_shape_id: str | None = None,
     text_range: list[int] | None = None,
 ) -> ToolResult:
-    """Set the fill of exact shapes to one color, a fountain, or a donor's fill. One undo step, read back.
+    """Set the fill of exact shapes to a color, a fountain or a donor's fill. One undo step, read back.
 
     Pass exactly one of:
-    - color: "PANTONE 485 C" or "485 C" or a custom spot such as "RVW-BK01A" (looked up in the document
-      palette, then the installed spot palettes; not found -> near matches), {"ink": "PANTONE 485 C",
-      "tint": 50, "palette": optional name or GUID}, "CMYK 0/100/100/0", "RGB 255/0/0" or "#FF0000",
-      "registration", "none", or {"from_shape_id": id, "part": "fill"|"outline"}. Ink entries from
-      get_ink_inventory and colors from inspect_shapes are accepted as is.
-    - fountain: {"type": "linear"|"radial", "angle": degrees, "stops": [{"color": spec, "position": 0},
-      ..., {"color": spec, "position": 100}]}.
-    - from_shape_id: copy the donor's uniform fill (or no fill) on the same page.
-    text_range [start, end) (zero-based, end exclusive, as inspect_text_fill_runs) recolors only those
-    characters of one text shape. Text shapes otherwise get one fill for every character.
-    Refuses, changing nothing, when any target is a group, bitmap, effect-generated object, or on a locked or
-    master layer (refused lists each). Returns each shape's fill as get_ink_inventory names it (spot name and
-    tint, CMYK/RGB components, registration, none; text: runs), plus the palette a spot came from.
+    - color, a color spec (every tool takes these): a spot name ("PANTONE 485 C", "485 C", "RVW-BK01A"; the
+      document palette, then installed palettes; unknown names get near matches), {"ink", "tint": 0-100,
+      "palette"}, "CMYK 0/100/100/0", "RGB 255/0/0", "#FF0000", "registration", "none", or
+      {"from_shape_id", "part": "fill"|"outline"}. get_ink_inventory inks and inspect_shapes colors work as is.
+    - fountain: {"type": "linear"|"radial", "angle": degrees, "stops": [{"color", "position": 0-100}, ...]}.
+    - from_shape_id: copy a donor's uniform fill (same page).
+    text_range [start, end) (as inspect_text_fill_runs) recolors only those characters of one text shape.
+    Refuses groups and bitmaps. Returns each fill as get_ink_inventory names it (text: runs).
     """
     if sum(value is not None for value in (color, fountain, from_shape_id)) != 1:
         return ToolResult.fail("Pass exactly one of color, fountain or from_shape_id")
@@ -477,12 +462,9 @@ def set_outline(
 ) -> ToolResult:
     """Set the outline color and/or width of exact shapes, keeping every other outline property. One undo step.
 
-    color takes the same specs as set_fill: a spot by name (spot outlines stay spot; never converted to
-    process), {"ink", "tint", "palette"}, CMYK, RGB, registration, "none" (removes the outline), or
-    {"from_shape_id": id, "part": "outline"|"fill"}. width is in unit (default pt) and must be positive;
-    width alone keeps each color; color alone keeps each width. A shape with no outline needs both.
-    Refuses, changing nothing, when any target is a group, bitmap, effect-generated object, or on a locked or
-    master layer. Returns each shape's outline (color as get_ink_inventory names it, width_pt).
+    color: a color spec (see set_fill; spot outlines stay spot); "none" removes the outline. width: positive,
+    in unit. Width alone keeps each color and color alone each width; a shape without an outline needs both.
+    Refuses groups and bitmaps. Returns each outline read back (color, width_pt).
     """
     if color is None and width is None:
         return ToolResult.fail("Pass color, width, or both")
@@ -553,11 +535,8 @@ def set_outline(
 def set_overprint(
     document_path: str, page_index: int, shape_ids: list[str], fill: bool | None = None, outline: bool | None = None,
 ) -> ToolResult:
-    """Set the fill and/or outline overprint flags of exact shapes. One undo step, read back.
-
-    Omitted flags are kept. Refuses, changing nothing, when any target is a group, bitmap, effect-generated
-    object, or on a locked or master layer. Returns both flags per shape (inspect_shapes reads them too).
-    """
+    """Set the fill and/or outline overprint flags of exact shapes; omitted flags are kept. One undo step,
+    read back. Refuses groups and bitmaps."""
     if fill is None and outline is None:
         return ToolResult.fail("Pass fill, outline, or both")
 
@@ -588,10 +567,9 @@ def set_overprint(
 # --- set_transparency ---------------------------------------------------------------------------------------
 
 def set_transparency(document_path: str, page_index: int, shape_ids: list[str], opacity: float) -> ToolResult:
-    """Set uniform transparency on exact shapes: opacity 0-100 (100 removes transparency). One undo step.
+    """Set uniform transparency on exact shapes: opacity 0-100 (100 removes it). One undo step, read back.
 
-    Transparency makes output blend or halftone the ink (get_ink_inventory warns about it). Refuses, changing
-    nothing, on groups, effect-generated objects and locked or master layers. Returns the read-back opacity.
+    Transparency blends or halftones the ink on output (get_ink_inventory warns about it). Refuses groups.
     """
     if not math.isfinite(opacity) or not 0 <= opacity <= 100:
         return ToolResult.fail("opacity must be between 0 and 100")
@@ -626,10 +604,10 @@ def set_transparency(document_path: str, page_index: int, shape_ids: list[str], 
 # --- undo ---------------------------------------------------------------------------------------------------
 
 def undo(document_path: str, steps: int = 1) -> ToolResult:
-    """Undo the last steps (1-20) of an exact open document. Activates it first: CorelDRAW undoes the active one.
+    """Undo the last steps (1-20) of a document; every edit tool call is one step. Activates the document.
 
-    Each color tool edit is one step. CorelDRAW does not expose its undo history through automation, so the
-    result cannot name what was undone: verify with get_ink_inventory or inspect_shapes.
+    CorelDRAW does not expose its undo history, so the result cannot say what was undone: check with
+    inspect_shapes or get_ink_inventory.
     """
     if not isinstance(steps, int) or not 1 <= steps <= 20:
         return ToolResult.fail("steps must be between 1 and 20")
@@ -644,5 +622,4 @@ def undo(document_path: str, steps: int = 1) -> ToolResult:
         return {"document_path": actual_path, "undone_steps": steps, "dirty": bool(doc.Dirty),
                 "undo_history_available": False}
 
-    result = conn.safe_call(run)
-    return ToolResult.ok(**result["result"]) if result["success"] else ToolResult.fail(result["error"])
+    return respond(conn.safe_call(run), document_path=document_path)

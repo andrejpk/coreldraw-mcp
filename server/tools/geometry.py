@@ -123,16 +123,13 @@ def transform_shapes(
     unit: Unit | None = None,
     as_group: bool = False,
 ) -> ToolResult:
-    """Move, resize, scale and/or rotate exact shapes (groups, text, bitmaps too); one verified undo step.
+    """Move, resize, scale and/or rotate exact shapes (groups, text and bitmaps too). One undo step, read back.
 
-    unit (in, mm, cm, pt) is required with move_to, move_by or size. Coordinates as inspect_shapes bounds: x right,
-    y up from the document origin (normally the page's bottom-left).
-    move_to {"x", "y"} (either optional) puts the anchor there; move_by {"dx", "dy"}; size {"width", "height"}
-    (one keeps the aspect ratio) or scale (1.5 or {"x", "y"}); rotate in degrees counterclockwise.
-    Size/scale and rotate happen about the anchor (center, top_left, top_center, top_right, middle_left,
-    middle_right, bottom_left, bottom_center, bottom_right), then the move. as_group: one combined bounding box
-    instead of each shape's own. Refuses locked/master layers, effect groups and effect-generated objects (use the
-    control shape), PowerClip contents, shapes inside a targeted group. Returns bounds [left, bottom, right, top]
+    unit is required with move_to, move_by or size; page coordinates, y up. move_to {"x", "y"} (either
+    optional) puts the anchor there; move_by {"dx", "dy"}; size {"width", "height"} (one keeps the aspect
+    ratio) or scale (1.5 or {"x", "y"}); rotate: degrees counterclockwise. Size, scale and rotate happen about
+    the anchor, then the move. as_group: use one combined box instead of each shape's own. Refuses effect
+    groups (use the control shape), PowerClip contents and shapes inside a targeted group. Returns bounds
     before and after (and rotation_angle), checked against the request.
     """
     try:
@@ -281,14 +278,13 @@ def arrange_shapes(
     spacing: float | None = None,
     unit: Unit | None = None,
 ) -> ToolResult:
-    """Align, distribute or restack exact shapes on one page; one verified undo step. Pass one of:
+    """Align, distribute or restack exact shapes on one page. One undo step, read back. Pass exactly one of:
 
-    align: left/center/right or top/middle/bottom to reference "selection" (combined box), "page", or a shape ID
-    (it stays put). distribute: horizontal/vertical, equal gaps (ordered by center, top to bottom), the outermost
-    shapes fixed ("selection") or on the page edges ("page"); spacing + unit sets the gap from the first shape.
-    z_order: front/back of their layer or group, forward/backward one step, or above/below the shape ID in
-    reference (same layer and group); relative order kept. Refuses as transform_shapes. Returns bounds, or each
-    shape's stacking index (1 = front) and its neighbours above and below.
+    align: left/center/right/top/middle/bottom to reference "selection" (combined box), "page" or a shape ID
+    (which stays put). distribute: horizontal/vertical with equal gaps between the outermost shapes
+    ("selection") or the page edges ("page"); spacing + unit fixes the gap instead. z_order: front/back of their
+    layer or group, forward/backward one step, or above/below the shape ID in reference; relative order is
+    kept. Refuses as transform_shapes. Returns bounds, or each stacking index (1 = front) and its neighbours.
     """
     chosen = [name for name, value in (("align", align), ("distribute", distribute), ("z_order", z_order))
               if value is not None]
@@ -508,11 +504,10 @@ def duplicate_shapes(
     document_path: str, page_index: int, shape_ids: list[str], dx: float = 0.0, dy: float = 0.0,
     unit: Unit = "pt", target_layer: str | None = None,
 ) -> ToolResult:
-    """Duplicate exact shapes (groups too), offset by dx/dy in unit, as one undo step.
+    """Duplicate exact shapes (groups too), offset by dx/dy in unit. One undo step, read back.
 
-    Copies go above their source, or on top of target_layer (editable layer of this page). Refuses effect
-    groups, effect-generated and master-layer objects, and copies onto a locked layer. Returns new_ids in
-    order with each copy's layer and verified bounds.
+    Copies go above their sources, or on top of target_layer (an editable layer of this page). Refuses effect
+    groups and effect-generated objects. Returns new_ids in order with each copy's layer and bounds.
     """
     if unit not in MEASUREMENT_UNITS or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (dx, dy)):
         return ToolResult.fail(f"unit must be one of {', '.join(MEASUREMENT_UNITS)} and dx/dy finite numbers")
@@ -580,11 +575,8 @@ def _refuse(targets, extra):
 # --- convert_to_curves -----------------------------------------------------------------------------------------
 
 def convert_to_curves(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
-    """Convert exact shapes (text, rectangles, ellipses, polygons) to curves, as one undo step.
-
-    Curves are left as they are. Refuses groups, bitmaps, effect-generated objects, locked or master
-    layers. Returns each shape's type before and after and its ID afterwards.
-    """
+    """Convert exact shapes (text, rectangles, ellipses, polygons) to curves; curves stay as they are. One undo
+    step. Refuses groups and bitmaps. Returns each shape's type before and after and its ID afterwards."""
     def body(app, doc, page, targets):
         _refuse(targets, lambda shape_id, view, entry: refusal(view, entry, consume=True))
         todo = {shape_id: target for shape_id, target in targets.items() if target[1].type != 3}
@@ -635,16 +627,14 @@ def combine_shapes(
     target_layer: str | None = None,
     preserve_order: bool = True,
 ) -> ToolResult:
-    """Weld, trim, intersect, combine or break apart exact shapes on one page. One verified undo step.
+    """Weld, trim, intersect, combine or break apart exact shapes on one page. One undo step, read back.
 
-    weld: union. With preserve_order the shapes must be adjacent direct children of one layer with identical
-    paint and no effects; the result keeps their place. Otherwise everything is welded into the first ID.
-    trim: the first ID is cut by the others. intersect: the common area. combine: one curve of all paths.
-    break_apart: each subpath becomes a shape. keep_sources=false replaces the inputs; true works on copies.
-    target_layer (editable layer of this page) receives the results. Refuses groups, bitmaps, effects,
-    effect-generated objects and consumed shapes on locked or master layers. Stops and undoes itself after 35 s
-    (split large selections). Returns result_ids and per result layer, area (holes subtracted), perimeter,
-    subpaths, bounds and paint; sources' areas.
+    weld: union; with preserve_order the shapes must be adjacent top-level shapes of one layer with identical
+    paint, and the result keeps their place, otherwise all are welded into the first ID. trim: the first ID is
+    cut by the others. intersect: the common area. combine: one curve of all paths. break_apart: each subpath
+    becomes a shape. keep_sources=true works on copies. target_layer (editable, this page) receives the
+    results. Refuses groups, bitmaps and effects. Undoes itself after 35 s (split large selections). Returns
+    result_ids with layer, area (holes subtracted), perimeter, subpaths, bounds and paint.
     """
     if operation not in _LABELS:
         return ToolResult.fail(f"operation must be one of {', '.join(_LABELS)}")

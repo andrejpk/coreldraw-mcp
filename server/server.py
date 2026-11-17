@@ -15,7 +15,53 @@ from starlette.responses import JSONResponse
 
 _ROOT = Path(__file__).resolve().parent.parent
 _HTTP_OPTIONS = {"path": "/mcp", "stateless_http": True, "json_response": True, "host_origin_protection": True}
-mcp = FastMCP("coreldraw-signage")
+INSTRUCTIONS = """CorelDRAW automation. Conventions shared by every tool:
+- document_path: an open document's full path as list_documents reports it (an unsaved document's title).
+  Reads work on any open document; edits activate their document, because CorelDRAW undoes the active one.
+- page_index and pages are one-based. shape_ids are StaticID strings of that page, from inspect_shapes or
+  find_shapes.
+- unit: "in", "mm", "cm" or "pt". Results report lengths in document_unit unless they name a unit. Bounds are
+  [left, bottom, right, top] in page coordinates, y up.
+- Colors are color specs, documented on set_fill.
+- Edit tools are one undo step (undo reverts it) and read their result back. They refuse the whole call,
+  changing nothing, for locked or master layers, effect-generated objects and other unsupported targets, and
+  list each target in data.refused.
+- Every tool returns {success, message, data, error}. A failed call's error says what to do next, and
+  data.state tells CorelDRAW problems (busy or timeout: retry or poll get_coreldraw_status; disconnected,
+  not_running, unavailable) from a request to fix (tool_error).
+"""
+mcp = FastMCP("coreldraw-signage", instructions=INSTRUCTIONS)
+
+# Tool annotations (MCP hints; the defaults are read-write, destructive, not idempotent).
+READ = {"readOnlyHint": True}
+ADDS = {"destructiveHint": False}
+ADDS_SAME = {"destructiveHint": False, "idempotentHint": True}
+SETS = {"idempotentHint": True}
+
+
+def _lean_schema(schema: dict) -> dict:
+    """Drop the null branch and null default of optional parameters: omitting one means the same thing.
+
+    Arguments are still validated against the function signature, so an explicit null keeps working.
+    """
+    for prop in schema.get("properties", {}).values():
+        branches = prop.get("anyOf")
+        if branches and {"type": "null"} in branches and "default" in prop and prop["default"] is None:
+            rest = [branch for branch in branches if branch != {"type": "null"}]
+            del prop["anyOf"], prop["default"]
+            if len(rest) == 1:
+                prop.update(rest[0])
+            else:
+                prop["anyOf"] = rest
+    return schema
+
+
+def add(fn, hints=None):
+    """Register a tool function: docstring as description, no output schema (every tool returns the same
+    ToolResult object, still sent as structured content), lean input schema, MCP annotations."""
+    tool = Tool.from_function(fn, output_schema=None, annotations=hints)
+    tool.parameters = _lean_schema(tool.parameters)
+    mcp.add_tool(tool)
 
 
 def setup_logging(*, http):
@@ -27,10 +73,10 @@ def setup_logging(*, http):
 
 
 def get_coreldraw_status() -> ToolResult:
-    """Check whether the running CorelDRAW instance responds to COM without opening or changing artwork.
+    """Check that CorelDRAW responds, without touching any document. Returns state "ready" and the version.
 
-    While another tool is still running, returns state "busy" and running: the tool (operation), seconds,
-    read_only, time_limit_seconds, timed_out and interrupting (a read past its limit being cancelled).
+    While another tool runs: state "busy" and running (operation, seconds, read_only, time_limit_seconds,
+    timed_out, interrupting).
     """
     status = get_connection().probe()
     if status["success"]:
@@ -75,83 +121,82 @@ def register_tools():
         text,
     )
 
-    mcp.add_tool(Tool.from_function(get_coreldraw_status, annotations={"readOnlyHint": True}))
-    mcp.add_tool(Tool.from_function(document.list_documents, annotations={"readOnlyHint": True}))
-    mcp.add_tool(document.open_document)
-    mcp.add_tool(document.create_document)
-    mcp.add_tool(document.save_document)
-    mcp.add_tool(document.close_document)
-    mcp.add_tool(document.edit_pages)
-    mcp.add_tool(document.add_guideline)
+    add(get_coreldraw_status, READ)
+    add(document.list_documents, READ)
+    add(document.open_document, ADDS_SAME)
+    add(document.create_document, ADDS)
+    add(document.save_document, SETS)
+    add(document.close_document)
+    add(document.edit_pages)
+    add(document.add_guideline, ADDS)
 
-    mcp.add_tool(shapes.create_shape)
-    mcp.add_tool(shapes.import_file)
-    mcp.add_tool(geometry.transform_shapes)
-    mcp.add_tool(geometry.arrange_shapes)
-    mcp.add_tool(shapes.group_shapes)
-    mcp.add_tool(shapes.powerclip)
-    mcp.add_tool(shapes.delete_shapes)
-    mcp.add_tool(inspection.inspect_shapes)
-    mcp.add_tool(Tool.from_function(inks.get_ink_inventory, annotations={"readOnlyHint": True}))
-    mcp.add_tool(find.find_shapes)
-    mcp.add_tool(Tool.from_function(inspection.get_ui_selection, annotations={"readOnlyHint": True}))
-    mcp.add_tool(effects.apply_contour)
-    mcp.add_tool(effects.separate_effect)
-    mcp.add_tool(silhouette.offset_silhouette)
-    mcp.add_tool(geometry.duplicate_shapes)
-    mcp.add_tool(geometry.combine_shapes)
-    mcp.add_tool(geometry.convert_to_curves)
-    mcp.add_tool(proof.simulate_overprints)
-    mcp.add_tool(proof.get_print_separation_settings)
-    mcp.add_tool(proof.export_page_proof_pdf)
-    mcp.add_tool(plates.render_plates)
+    add(shapes.create_shape, ADDS)
+    add(shapes.import_file, ADDS)
+    add(geometry.transform_shapes)
+    add(geometry.arrange_shapes)
+    add(shapes.group_shapes)
+    add(shapes.powerclip)
+    add(shapes.delete_shapes)
+    add(inspection.inspect_shapes, READ)
+    add(inks.get_ink_inventory, READ)
+    add(find.find_shapes, ADDS_SAME)
+    add(inspection.get_ui_selection, READ)
+    add(effects.apply_contour)
+    add(effects.separate_effect)
+    add(silhouette.offset_silhouette, ADDS)
+    add(geometry.duplicate_shapes, ADDS)
+    add(geometry.combine_shapes)
+    add(geometry.convert_to_curves, SETS)
+    add(proof.simulate_overprints, ADDS_SAME)
+    add(proof.get_print_separation_settings, READ)
+    add(proof.export_page_proof_pdf, ADDS)
+    add(plates.render_plates, ADDS)
 
-    mcp.add_tool(text.set_text_content)
-    mcp.add_tool(text.set_text_content_by_id)
-    mcp.add_tool(text.inspect_text_fill_runs)
-    mcp.add_tool(text.set_text_style)
-    mcp.add_tool(text.fit_text_to_frame)
-    mcp.add_tool(text.check_text_overflow)
-    mcp.add_tool(text.create_text_frame)
+    add(text.set_text_content, SETS)
+    add(text.set_text_content_by_id, SETS)
+    add(text.inspect_text_fill_runs, READ)
+    add(text.set_text_style, SETS)
+    add(text.fit_text_to_frame, SETS)
+    add(text.check_text_overflow, READ)
+    add(text.create_text_frame, ADDS)
 
-    mcp.add_tool(colors.set_fill)
-    mcp.add_tool(colors.set_outline)
-    mcp.add_tool(colors.set_overprint)
-    mcp.add_tool(colors.set_transparency)
-    mcp.add_tool(recolor.replace_color)
-    mcp.add_tool(colors.undo)
+    add(colors.set_fill, SETS)
+    add(colors.set_outline, SETS)
+    add(colors.set_overprint, SETS)
+    add(colors.set_transparency, SETS)
+    add(recolor.replace_color, SETS)
+    add(colors.undo)
 
-    mcp.add_tool(Tool.from_function(layers.list_layers, annotations={"readOnlyHint": True}))
-    mcp.add_tool(layers.set_layer_properties)
-    mcp.add_tool(layers.create_layer)
-    mcp.add_tool(layers.move_shapes_to_layer)
+    add(layers.list_layers, READ)
+    add(layers.set_layer_properties, SETS)
+    add(layers.create_layer, ADDS)
+    add(layers.move_shapes_to_layer, SETS)
 
-    mcp.add_tool(export.export_pdf)
-    mcp.add_tool(export.export_dxf)
-    mcp.add_tool(export.export_ai)
-    mcp.add_tool(export.export_svg)
-    mcp.add_tool(export.export_png)
-    mcp.add_tool(export.export_jpeg)
-    mcp.add_tool(export.export_preview_png)
-    mcp.add_tool(export.batch_export)
+    add(export.export_pdf, SETS)
+    add(export.export_dxf, SETS)
+    add(export.export_ai, SETS)
+    add(export.export_svg, SETS)
+    add(export.export_png, SETS)
+    add(export.export_jpeg, SETS)
+    add(export.export_preview_png, SETS)
+    add(export.batch_export, SETS)
 
-    mcp.add_tool(preflight.check_dimensions)
-    mcp.add_tool(preflight.check_text_overflow_all)
-    mcp.add_tool(preflight.check_missing_fonts)
+    add(preflight.check_dimensions, READ)
+    add(preflight.check_text_overflow_all, READ)
+    add(preflight.check_missing_fonts)
 
-    mcp.add_tool(templates.list_templates)
-    mcp.add_tool(templates.get_template_info)
-    mcp.add_tool(templates.get_size_variant)
+    add(templates.list_templates, READ)
+    add(templates.get_template_info, READ)
+    add(templates.get_size_variant, READ)
 
-    mcp.add_tool(engineering.populate_title_block)
-    mcp.add_tool(engineering.assemble_engineering_drawing)
+    add(engineering.populate_title_block, SETS)
+    add(engineering.assemble_engineering_drawing, SETS)
 
-    mcp.add_tool(data_merge.read_excel_data)
-    mcp.add_tool(data_merge.merge_record)
-    mcp.add_tool(data_merge.batch_merge)
-    mcp.add_tool(data_merge.generate_barcode)
-    mcp.add_tool(data_merge.generate_qrcode)
-
+    add(data_merge.read_excel_data, READ)
+    add(data_merge.merge_record, SETS)
+    add(data_merge.batch_merge, SETS)
+    add(data_merge.generate_barcode, ADDS)
+    add(data_merge.generate_qrcode, ADDS)
 
 def main():
     parser = argparse.ArgumentParser(description="CorelDRAW MCP bridge")

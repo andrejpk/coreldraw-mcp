@@ -4,8 +4,9 @@ import ntpath
 import os
 from typing import Literal
 
-from core.connection import get_connection
+from core.connection import error_text, get_connection
 from core.models import ToolResult
+from core.results import respond
 from core.targets import (
     Target,
     activate_document,
@@ -52,20 +53,9 @@ def _document_entry(app, doc, detail=False):
     }
 
 
-def _result(result, message=None):
-    if result["success"]:
-        data = result["result"]
-        if error := data.pop("verification_error", None):
-            return ToolResult(success=False, error=error, data=data)
-        return ToolResult.ok(message, **data)
-    return ToolResult.fail(result.get("error", "CorelDRAW call failed"))
-
-
 def list_documents(detail: bool = False) -> ToolResult:
-    """List open documents: document_path (pass it to other tools; an unsaved document's title), title,
-    saved, dirty, unit ("in", "mm"...), page_count, active, active_page, page sizes in that unit.
-
-    detail=True adds each page's layers (master, special, visible, printable, editable, shape_count).
+    """List open documents: document_path (pass it to other tools), title, saved, dirty, unit, page_count,
+    active, active_page and page sizes in that unit. detail=True adds each page's layers (list_layers has more).
     """
     conn = get_connection()
 
@@ -75,14 +65,14 @@ def list_documents(detail: bool = False) -> ToolResult:
         active = next((entry["document_path"] for entry in documents if entry["active"]), None)
         return {"active_document_path": active, "documents": documents}
 
-    return _result(conn.read_call(run))
+    return respond(conn.read_call(run))
 
 
 def open_document(path: str, activate: bool = True) -> ToolResult:
-    """Open an absolute .cdr path, or create a new unsaved document from a .cdt. Never changes the unit.
+    """Open an absolute .cdr path, or start an unsaved document from a .cdt template. Never changes the unit.
 
-    An already-open .cdr is returned, not reopened (already_open). activate=False keeps the current
-    active document. Returns the list_documents entry.
+    An open .cdr is returned as is (already_open). activate=False keeps the active document. Returns the
+    list_documents entry.
     """
     conn = get_connection()
 
@@ -111,7 +101,7 @@ def open_document(path: str, activate: bool = True) -> ToolResult:
             activate_document(app, previous)
         return {"already_open": bool(existing), "source_path": path, **_document_entry(app, doc)}
 
-    return _result(conn.safe_call(run))
+    return respond(conn.safe_call(run), source_path=path)
 
 
 def _file_state(path):
@@ -160,10 +150,10 @@ def _verify_saved(doc, path, before, data):
 
 
 def save_document(document_path: str, save_as_path: str | None = None, overwrite: bool = False) -> ToolResult:
-    """Save an open document in place, or with save_as_path (absolute .cdr) to a new file it then refers to.
+    """Save a document in place, or to save_as_path (absolute .cdr), which it then refers to.
 
-    An existing file needs overwrite=True; a path open in another document is refused. Verifies the
-    file on disk, the document's path and its clean state.
+    An existing file needs overwrite=True; a path open in another document is refused. Verifies the file, the
+    document's path and its clean state.
     """
     conn = get_connection()
 
@@ -179,7 +169,7 @@ def save_document(document_path: str, save_as_path: str | None = None, overwrite
                 **describe(Target(doc, document_identity(doc)))}
         return _verify_saved(doc, destination, before, data)
 
-    return _result(conn.safe_call(run))
+    return respond(conn.safe_call(run), document_path=document_path)
 
 
 def close_document(document_path: str, discard_changes: bool = False) -> ToolResult:
@@ -202,13 +192,13 @@ def close_document(document_path: str, discard_changes: bool = False) -> ToolRes
             data["verification_error"] = "The document is still open after Close"
         return data
 
-    return _result(conn.safe_call(run))
+    return respond(conn.safe_call(run), document_path=document_path)
 
 
 def create_document(width: float, height: float, unit: str = "mm", save_as_path: str | None = None) -> ToolResult:
-    """Create an active one-page document; unit (in, mm, cm, pt) is its unit and the page size unit.
+    """Create a one-page document and make it active. unit (in, mm, cm, pt) is its unit and the page size unit.
 
-    With save_as_path (new absolute .cdr) it is saved at once; otherwise its document_path is its title.
+    save_as_path (a new absolute .cdr) saves it at once; otherwise its document_path is its title.
     """
     conn = get_connection()
     try:
@@ -237,7 +227,7 @@ def create_document(width: float, height: float, unit: str = "mm", save_as_path:
             raise
         return {**_document_entry(app, doc), **data}
 
-    return _result(conn.safe_call(run))
+    return respond(conn.safe_call(run))
 
 
 _PAGE_ACTIONS = ("add", "delete", "resize", "activate")
@@ -252,11 +242,10 @@ def edit_pages(
     height: float | None = None,
     unit: str | None = None,
 ) -> ToolResult:
-    """Edit pages; activates the document, never changes its unit. Returns pages and sizes.
+    """Add, delete, resize or activate pages; never changes the document unit. Returns every page's size.
 
-    add: count pages at the end, or after page_index. delete: page_index (not the only page).
-    resize: page_index to width x height in unit (in, mm, cm, pt). activate: make page_index active.
-    add, delete and resize are one undo step.
+    add: count (1-100) pages at the end, or after page_index. delete: page_index (not the only page).
+    resize: page_index to width x height in unit. activate: make page_index active. Edits are one undo step.
     """
     if action not in _PAGE_ACTIONS:
         return ToolResult.fail(f"action must be one of {', '.join(_PAGE_ACTIONS)}")
@@ -319,11 +308,11 @@ def edit_pages(
             "active_page": doc.ActivePage.Index, "pages": _pages(doc),
         }
 
-    return _result(conn.safe_call(run))
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
 
 
 def add_guideline(document_path: str, position: float, orientation: str = "horizontal") -> ToolResult:
-    """Add a horizontal or vertical guideline at position mm on the active page. Active document only."""
+    """Add a horizontal or vertical guideline at position (mm) on the active page; document_path must be active."""
     conn = get_connection()
     orientation_lower = orientation.lower()
     if orientation_lower not in ("horizontal", "vertical"):
@@ -348,11 +337,9 @@ def add_guideline(document_path: str, position: float, orientation: str = "horiz
         data = {"position_mm": position, "orientation": orientation_lower, "page_index": page.Index}
         try:
             data["shape_id"] = str(guide.StaticID)
-        except Exception:
-            pass
+        except Exception as exc:  # the Guides.Add fallback may return a guide without a StaticID
+            data.update(shape_id=None, shape_id_error=error_text(exc))
         return data
 
-    result = call_on_active(conn, document_path, _add)
-    if result["success"]:
-        return ToolResult.ok(f"Added {orientation_lower} guideline at {position} mm", **result["result"])
-    return ToolResult.fail(result.get("error", "Adding the guideline failed"))
+    return respond(call_on_active(conn, document_path, _add), f"Added a {orientation_lower} guideline at "
+                   f"{position} mm", document_path=document_path)

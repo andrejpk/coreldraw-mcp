@@ -61,9 +61,9 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 | `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
 | `proof` + `plates` | 4 | `export_page_proof_pdf` (page or one layer, optional hidden-but-printable layers, state restored), `render_plates` (Ghostscript films per plate: coverage, bboxes, registration-only, object attribution, predicted vs rendered, containment/choke check), `simulate_overprints`, `get_print_separation_settings` |
 | `layers` | 4 | `list_layers` (every page and master layer: visible, printable, locked, color, object counts), `set_layer_properties` (visible / printable / editable / rename; master layers only with `master=true`; reports the dirty flag), `create_layer` (exact page or master), `move_shapes_to_layer` (exact IDs within a page, order kept, active layer unchanged) |
-| `export` | 7 | PDF / DXF / AI / SVG / PNG export, visual preview, batch export |
-| `preflight` | 4 | Size check, text overflow, missing fonts, color report |
-| `data_merge` | 3 | Excel data read, barcode / QR code generation |
+| `export` | 8 | PDF / DXF / AI / SVG / PNG / JPEG export of the active page, visual preview, batch export |
+| `preflight` | 3 | Size check, text overflow, missing fonts |
+| `data_merge` | 5 | Excel data read, single and batch template merge, barcode / QR code generation |
 
 ---
 

@@ -11,6 +11,7 @@ import numpy as np
 from core import separations as seps
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import failure
 from core.targets import resolve_document, resolve_page
 from core.units import convert, unit_name
 from tools.inks import PROCESS_PLATES, _OutOfTimeError, _page_inventory
@@ -152,29 +153,17 @@ def render_plates(
     contain: list[dict] | None = None,
     max_ids_per_plate: int = 10,
 ) -> ToolResult:
-    """Render what each film of one page will contain, measure every plate, and explain it, in one call.
+    """Render each film (separation plate) of one page with Ghostscript, measure it and explain it, in one call.
 
-    Publishes the page (or one page layer, layer_name) like export_page_proof_pdf, renders it with
-    Ghostscript (tiffsep, process colors as written), and writes to output_dir (a new or empty absolute
-    folder): proof.pdf, one film PNG per plate (black = ink), composite.png (all plates, overprints
-    simulated) and plates.json. No image data is returned. dpi 36-300 (default 150).
-
-    Per plate: non_blank; coverage_percent and inked_area of the page; bbox; registration_only.
-    Registration (content on every plate at the same pixels, inside registration objects) is separated:
-    art_* fields exclude it. Bounding boxes are in document units and page coordinates, like
-    inspect_shapes bounds (left/bottom/right/top), plus px. attributed_ids: StaticIDs whose ink makes this
-    plate and whose bounds overlap its art (approximate: bounding boxes, not exact shapes), largest first;
-    unattributed_art: art no such object covers. differences compares rendered plates with the ink
-    inventory: expected_plate_blank, unexpected_plate, art_missing (only registration rendered),
-    process_plate_from_bitmaps_only, estimated_colors, unattributed_art.
-
-    Hidden layers that are printable are omitted from the PDF (CorelDRAW print may include them): a
-    warning names them; include_hidden_printable=true makes them visible while publishing (restored).
-
-    contain: optional checks [{"plate": "A", "within": ["B", "C"], "inset": 0.5, "unit": "pt"|"px"|"mm"|"in",
-    "region": [left, bottom, right, top]}]: art of plate A outside the union of the within plates' art,
-    shrunk by inset (negative grows it), optionally only inside region. Returns protrusion area, percent,
-    bbox and the largest pieces, e.g. to verify an underbase choke.
+    Publishes the page (or layer_name) as export_page_proof_pdf does and writes to output_dir (a new or empty
+    absolute folder) proof.pdf, one PNG per plate (black = ink), composite.png and plates.json; no image data
+    is returned. dpi 36-300. Per plate: non_blank, coverage_percent, inked_area, bbox (document units and px),
+    registration_only; art_* fields exclude registration. attributed_ids: StaticIDs whose ink makes the plate
+    and whose bounds overlap its art (approximate), largest first. differences compares the plates with
+    get_ink_inventory (expected_plate_blank, unexpected_plate, art_missing...). Hidden printable layers are
+    omitted unless include_hidden_printable=true. contain: checks [{"plate": "A", "within": ["B", "C"],
+    "inset": 0.5, "unit": "pt"|"px"|"mm"|"in", "region": [left, bottom, right, top]}] report art of plate A
+    outside the within plates shrunk by inset (area, percent, bbox, largest pieces), e.g. an underbase choke.
     """
     started = time.perf_counter()
     timings = {}
@@ -204,7 +193,7 @@ def render_plates(
 
     result = conn.read_call(inventory)
     if not result["success"]:
-        return ToolResult.fail(result["error"])
+        return failure(result, document_path=document_path, page_index=page_index)
     actual_path, unit, page_data = result["result"]
     timings["inventory"] = round(time.perf_counter() - started, 2)
 
@@ -214,7 +203,7 @@ def render_plates(
     result = conn.safe_call(lambda: publish_proof(conn.app, actual_path, page_index, pdf, layer_name,
                                                   include_hidden_printable))
     if not result["success"]:
-        return ToolResult.fail(result["error"])
+        return failure(result, document_path=document_path, page_index=page_index)
     proof = result["result"]
     timings["export"] = round(time.perf_counter() - mark, 2)
 

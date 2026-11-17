@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import failure, respond
 from core.targets import resolve_document, resolve_page
 
 _PDF_PAGE_RANGE = 3
@@ -13,11 +14,10 @@ _PDF_SPOT_AS_SPOT = 0
 
 
 def simulate_overprints(document_path: str, enabled: bool | None = None) -> ToolResult:
-    """Read or set Simulate Overprints in the window of an exact open document.
+    """Read (enabled omitted) or set the Simulate Overprints view option of a document's window.
 
-    enabled omitted: read only (the document stays as it is). enabled true/false: activates the
-    document, sets the view option, and reads it back. A view setting only: it changes no artwork and
-    no output; render_plates shows what overprints do to each film.
+    Setting it activates the document and reads it back. It changes no artwork or output; render_plates shows
+    what overprints do to each film.
     """
     conn = get_connection()
 
@@ -32,7 +32,7 @@ def simulate_overprints(document_path: str, enabled: bool | None = None) -> Tool
 
     result = conn.safe_call(view_state) if enabled is not None else conn.read_call(view_state)
     if not result["success"]:
-        return ToolResult.fail(result["error"])
+        return failure(result, document_path=document_path)
     data = result["result"]
     if enabled is not None and data["simulate_overprints"] != enabled:
         return ToolResult(success=False, error="CorelDRAW did not apply the requested view setting", data=data)
@@ -40,12 +40,11 @@ def simulate_overprints(document_path: str, enabled: bool | None = None) -> Tool
 
 
 def get_print_separation_settings(document_path: str) -> ToolResult:
-    """Read an exact open document's print and separation settings without printing.
+    """Read a document's print and separation settings without printing. Read-only.
 
-    Returns the printer, copies, print range, whether separations are on, spot_to_cmyk (spots
-    printed as process), print_empty_plates, preserve_overprints, and disabled_plates (plates
-    switched off in the print settings, which will not print). Which plates each page produces,
-    and the objects behind them, come from get_ink_inventory.
+    Returns printer, copies, print range, separations_enabled, spot_to_cmyk (spots printed as process),
+    print_empty_plates, preserve_overprints and disabled_plates (switched off, will not print). The plates each
+    page produces come from get_ink_inventory.
     """
     conn = get_connection()
 
@@ -64,10 +63,7 @@ def get_print_separation_settings(document_path: str) -> ToolResult:
         }
         return {"document_path": actual_path, **_read_fields(fields)}
 
-    result = conn.read_call(read_settings)
-    if result["success"]:
-        return ToolResult.ok(**result["result"])
-    return ToolResult.fail(result["error"])
+    return respond(conn.read_call(read_settings), document_path=document_path)
 
 
 def _read_fields(fields):
@@ -213,15 +209,11 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str,
                           include_hidden_printable: bool = False) -> ToolResult:
     """Publish one page, or one page layer, as a composite proof PDF with native spots and overprints.
 
-    output_path: a new absolute .pdf path in an existing directory. CorelDRAW's Publish to PDF supplies
-    the artwork; it is not the print dialog, printer layout or RIP. No print job is sent.
-    Publish to PDF omits hidden layers even when they are printable (CorelDRAW print may include them):
-    their names are returned in hidden_printable_layers_omitted; include_hidden_printable=true makes
-    them visible while publishing. layer_name: proof of exactly one page-local layer (not master or
-    special); every other layer, including shared master layers, is non-printing while publishing, and
-    a hidden target is made visible. When layer flags change the document is activated. Afterwards the
-    tool restores and verifies layer printability and visibility, the PDF settings, the active page, the
-    document unit and the unsaved-changes flag, after success or failure. render_plates renders the films.
+    output_path: a new absolute .pdf in an existing folder. Uses Publish to PDF (not the print path; nothing is
+    printed), which omits hidden layers even when printable: they are listed in hidden_printable_layers_omitted,
+    and include_hidden_printable=true shows them while publishing. layer_name: proof only that page layer (not
+    master or special). Layer flags, PDF settings, active page, unit and dirty flag are restored and verified
+    afterwards, also on failure. render_plates renders and measures the films.
     """
     conn = get_connection()
     try:
@@ -232,6 +224,4 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str,
         return ToolResult.fail("include_hidden_printable applies to whole-page proofs, not layer_name proofs")
     result = conn.safe_call(lambda: publish_proof(conn.app, document_path, page_index, destination, layer_name,
                                                   include_hidden_printable))
-    if result["success"]:
-        return ToolResult.ok(**result["result"])
-    return ToolResult.fail(result["error"])
+    return respond(result, document_path=document_path, page_index=page_index)

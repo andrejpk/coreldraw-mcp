@@ -110,7 +110,7 @@ def active_target(app, document_path: str = "") -> Target:
         return require_active_document(app, document_path)
     doc = app.ActiveDocument
     if doc is None:
-        raise RuntimeError("CorelDRAW has no active document")
+        raise RuntimeError("CorelDRAW has no active document; open one with open_document")
     return Target(doc, document_identity(doc))
 
 

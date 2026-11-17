@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import failure
 from core.structure import CONTAINER_TYPES, StaleStructureError, page_layers, read_entries
 from core.targets import resolve_document, resolve_page
 from core.units import convert, unit_name
@@ -621,26 +622,17 @@ def get_ink_inventory(
     include_ids: bool = True,
     max_ids_per_ink: int = 5,
 ) -> ToolResult:
-    """Every ink each page uses, the source objects of each ink, and the separation plates the page implies.
+    """List every ink each page uses, the objects behind each ink, and the separation plates the page implies.
+    Read-only. Master layers count on every page they print on.
 
-    Read-only; document_path is any open document. pages: one-based page numbers (default all). Shared
-    (master) layers are included on every page they print on. Inks: spot (name, tints, palette identity),
-    process CMYK (plates = nonzero components), registration, RGB/other models and bitmaps (plates estimated:
-    color management decides), unknown. Each ink counts objects by state: prints, hidden_printable
-    (printable layer that is hidden: CorelDRAW prints it, Publish to PDF omits it), hidden_object, off_page
-    (entirely outside the page: prints nothing), clipped (PowerClip content outside its container),
-    non_printable_layer; parts used (fill, outline, outline_zero_width, text_fill/text_outline per
-    character run, text_whitespace, fountain_stop, pattern, bitmap); objects per layer; flags (in_powerclip,
-    effect_generated, transparent, locked_layer, master_layer); and up to max_ids_per_ink (0-50) StaticIDs
-    with layer, parts, state and PowerClip/effect links, printing objects first.
-
-    Page plates: print (non-blank plates of a CorelDRAW print), pdf_proof (same for export_page_proof_pdf),
-    registration_only (plates that only registration marks), estimated_only, hidden_printable_only,
-    blank_spot_plates (spots the page names but nothing marks: off page, clipped, whitespace). Warnings flag
-    near-duplicate spots, tints, hidden-but-printable inks, off-page-only inks, zero-width or zero-size
-    inked objects, tiny objects (isolated vs clusters), whitespace-only text runs, transparency, mixed fountains and process bitmaps.
-    Printable_only drops inks with no printing object. A long document may return next_pages: call
-    again with pages=next_pages.
+    Inks: spot (name, tints, palette), process CMYK (plates = nonzero components), registration, RGB and other
+    models and bitmaps (plates estimated), unknown. Per ink: object counts by state (prints, hidden_printable:
+    printed but omitted by Publish to PDF, hidden_object, off_page, clipped, non_printable_layer), parts (fill,
+    outline, text runs, fountain stops, bitmap...), objects per layer, flags, and up to max_ids_per_ink (0-50)
+    StaticIDs, printing objects first. Page plates: print, pdf_proof, registration_only, estimated_only,
+    hidden_printable_only, blank_spot_plates. Warnings: near-duplicate spots, hidden or off-page inks,
+    zero-size or tiny inked objects, whitespace runs, transparency. printable_only drops inks that print
+    nothing. A long document may return next_pages: call again with pages=next_pages.
     """
     if not 0 <= max_ids_per_ink <= 50:
         return ToolResult.fail("max_ids_per_ink must be between 0 and 50")
@@ -669,7 +661,7 @@ def get_ink_inventory(
 
     result = conn.read_call(inventory)
     if not result["success"]:
-        return ToolResult.fail(result["error"])
+        return failure(result, document_path=document_path)
     results, next_pages, actual_path, unit, page_count = result["result"]
     plates = sorted({plate for page in results for plate in page["plates"]["print"]})
     return ToolResult.ok(document_path=actual_path, document_unit=unit, page_count=page_count,

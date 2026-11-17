@@ -1,34 +1,45 @@
-"""印前质检工具 — 尺寸校验、文字溢出、缺失字体、色彩报告"""
+"""Preflight checks on the active page: page size, paragraph text overflow and missing fonts."""
 
-from core.connection import get_connection
+from core.connection import error_text, get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.results import respond
 from core.targets import call_on_active
 from core.units import MILLIMETER, convert
 
 _CDR_PARAGRAPH_TEXT = 1
 
 
-def check_dimensions(expected_width: float, expected_height: float, tolerance: float = 0.5, document_path: str = "") -> ToolResult:
-    """校验当前页面尺寸是否在容差范围内。
+def _active(conn):
+    doc = conn.app.ActiveDocument
+    if not doc:
+        raise RuntimeError("CorelDRAW has no active document; open one with open_document")
+    return doc
 
-    Reads the active document. Sizes and tolerance in mm.
-    """
+
+def _overflows(text):
+    """Whether paragraph text overflows its frame (the property name differs between versions)."""
+    try:
+        return bool(text.Overflows)
+    except Exception:
+        return bool(text.IsOverflowing)
+
+
+def check_dimensions(expected_width: float, expected_height: float, tolerance: float = 0.5,
+                     document_path: str = "") -> ToolResult:
+    """Check the active page size against expected_width x expected_height within tolerance (all mm).
+    Reads the active document (document_path, if given, must be active)."""
     conn = get_connection()
 
     def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
+        doc = _active(conn)
         page = doc.ActivePage
         actual_w = convert(page.SizeWidth, doc.Unit, MILLIMETER, conn.app)
         actual_h = convert(page.SizeHeight, doc.Unit, MILLIMETER, conn.app)
         w_diff = abs(actual_w - expected_width)
         h_diff = abs(actual_h - expected_height)
-        w_ok = w_diff <= tolerance
-        h_ok = h_diff <= tolerance
         return {
-            "passed": w_ok and h_ok,
+            "passed": w_diff <= tolerance and h_diff <= tolerance,
             "expected": {"width": expected_width, "height": expected_height},
             "actual": {"width": round(actual_w, 2), "height": round(actual_h, 2)},
             "diff": {"width": round(w_diff, 2), "height": round(h_diff, 2)},
@@ -38,150 +49,104 @@ def check_dimensions(expected_width: float, expected_height: float, tolerance: f
 
     result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
-        if result["result"]["passed"]:
-            return ToolResult.ok("尺寸校验通过", **result["result"])
-        return ToolResult.ok("尺寸校验未通过", **result["result"])
-    return ToolResult.fail(result.get("error", "尺寸校验失败"))
+        passed = result["result"]["passed"]
+        return ToolResult.ok("Page size within tolerance" if passed else "Page size out of tolerance",
+                             **result["result"])
+    return respond(result, document_path=document_path)
 
 
 def check_text_overflow_all(document_path: str = "") -> ToolResult:
-    """检查全文档所有文字形状的溢出状态。返回所有溢出的文字列表。
-
-    Reads the active document.
-    """
+    """List paragraph text on the active page that overflows its frame (top-level shapes). Reads the active
+    document (document_path, if given, must be active)."""
     conn = get_connection()
 
     def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        overflow_items = []
+        page = _active(conn).ActivePage
+        overflow_items, unreadable = [], []
         total_text = 0
-        try:
-            for s in page.Shapes:
-                if s.Type == CDR_TEXT_SHAPE:
-                    total_text += 1
-                    try:
-                        if s.Text.Type == _CDR_PARAGRAPH_TEXT:
-                            overflowing = False
-                            try:
-                                overflowing = s.Text.Overflows
-                            except Exception:
-                                try:
-                                    overflowing = s.Text.IsOverflowing
-                                except Exception:
-                                    pass
-                            if overflowing:
-                                content = ""
-                                try:
-                                    content = s.Text.Story
-                                except Exception:
-                                    pass
-                                overflow_items.append({
-                                    "name": s.Name,
-                                    "shape_id": str(s.StaticID),
-                                    "content_preview": content[:50] if content else "",
-                                })
-                    except Exception:
-                        continue
-        except Exception:
-            pass
-        return {
-            "passed": len(overflow_items) == 0,
-            "total_text_shapes": total_text,
-            "overflow_count": len(overflow_items),
-            "overflow_items": overflow_items,
-        }
+        for shape in page.Shapes:
+            if shape.Type != CDR_TEXT_SHAPE:
+                continue
+            total_text += 1
+            try:
+                if shape.Text.Type == _CDR_PARAGRAPH_TEXT and _overflows(shape.Text):
+                    content = shape.Text.Story.Text
+                    overflow_items.append({"name": shape.Name, "shape_id": str(shape.StaticID),
+                                           "content_preview": content[:50]})
+            except Exception as exc:
+                unreadable.append({"shape_id": str(shape.StaticID), "error": error_text(exc)})
+        data = {"passed": not overflow_items and not unreadable, "total_text_shapes": total_text,
+                "overflow_count": len(overflow_items), "overflow_items": overflow_items}
+        return {**data, "unreadable": unreadable} if unreadable else data
 
     result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
-        if r["passed"]:
-            return ToolResult.ok(f"所有 {r['total_text_shapes']} 处文字正常，无溢出", **r)
-        return ToolResult.ok(f"发现 {r['overflow_count']} 处文字溢出", **r)
-    return ToolResult.fail(result.get("error", "文字溢出检查失败"))
+        message = (f"No overflow in {r['total_text_shapes']} text shapes" if r["passed"]
+                   else f"{r['overflow_count']} text shapes overflow")
+        if r.get("unreadable"):
+            message += f"; {len(r['unreadable'])} could not be checked (see unreadable)"
+        return ToolResult.ok(message, **r)
+    return respond(result, document_path=document_path)
 
 
 def check_missing_fonts(document_path: str = "") -> ToolResult:
-    """检查文档是否使用了系统中缺失的字体。
-
-    Reads the active document.
-    """
+    """List fonts used by text on the active page that are not installed. Reads the active document
+    (document_path, if given, must be active)."""
     conn = get_connection()
 
     def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-
-        # 优先从 CorelDRAW Fonts 集合获取可用字体列表（最可靠）
+        doc = _active(conn)
+        warnings = []
+        # The installed font list is the reliable source; without it, test each font with a temporary shape.
         available_fonts: set[str] = set()
-        use_font_list = False
         try:
             font_col = conn.app.Fonts
-            for i in range(1, font_col.Count + 1):
-                try:
-                    available_fonts.add(font_col.Item(i).Name.lower())
-                except Exception:
-                    pass
-            use_font_list = bool(available_fonts)
-        except Exception:
-            pass
+            available_fonts = {font_col.Item(i).Name.lower() for i in range(1, font_col.Count + 1)}
+        except Exception as exc:
+            warnings.append(f"installed font list unavailable ({error_text(exc)}); fonts were tested on a "
+                            "temporary text shape")
+        use_font_list = bool(available_fonts)
 
         missing_fonts: set[str] = set()
         page = doc.ActivePage
-        try:
-            for s in page.Shapes:
-                if s.Type != CDR_TEXT_SHAPE:
-                    continue
-                # 收集形状使用的字体（字符级优先，形状级 fallback）
-                shape_fonts: set[str] = set()
+        for shape in page.Shapes:
+            if shape.Type != CDR_TEXT_SHAPE:
+                continue
+            # Character-level fonts first, the shape's font as the fallback.
+            shape_fonts: set[str] = set()
+            try:
+                chars = shape.Text.Characters
+                shape_fonts = {chars.Item(ci).Properties.Font for ci in range(1, chars.Count + 1)}
+            except Exception as exc:
+                warnings.append(f"shape {shape.StaticID}: character fonts unreadable ({error_text(exc)})")
+            if not shape_fonts:
                 try:
-                    chars = s.Text.Characters
-                    for ci in range(1, chars.Count + 1):
-                        try:
-                            shape_fonts.add(chars.Item(ci).Properties.Font)
-                        except Exception:
-                            pass
+                    shape_fonts.add(shape.Text.FontProperties.Name)
+                except Exception as exc:
+                    warnings.append(f"shape {shape.StaticID}: font unreadable ({error_text(exc)})")
+            for font_name in filter(None, shape_fonts):
+                if use_font_list:
+                    if font_name.lower() not in available_fonts:
+                        missing_fonts.add(font_name)
+                    continue
+                # Create a test shape and read back the font: CorelDRAW silently substitutes missing fonts.
+                try:
+                    test = page.ActiveLayer.CreateArtisticText(0, 0, "T", Font=font_name)
+                    actual = test.Text.FontProperties.Name
+                    test.Delete()
+                    if actual.lower() != font_name.lower():
+                        missing_fonts.add(font_name)
                 except Exception:
-                    pass
-                if not shape_fonts:
-                    try:
-                        shape_fonts.add(s.Text.FontProperties.Name)
-                    except Exception:
-                        pass
+                    missing_fonts.add(font_name)
 
-                for font_name in shape_fonts:
-                    if not font_name:
-                        continue
-                    if use_font_list:
-                        # 与 Fonts 集合比对，无需创建测试形状
-                        if font_name.lower() not in available_fonts:
-                            missing_fonts.add(font_name)
-                    else:
-                        # fallback：创建测试形状后读回实际字体名，检测是否被静默替换
-                        try:
-                            test = page.ActiveLayer.CreateArtisticText(0, 0, "T", Font=font_name)
-                            actual = test.Text.FontProperties.Name
-                            test.Delete()
-                            if actual.lower() != font_name.lower():
-                                missing_fonts.add(font_name)
-                        except Exception:
-                            missing_fonts.add(font_name)
-        except Exception:
-            pass
-
-        missing_list = sorted(list(missing_fonts))
-        return {"passed": len(missing_list) == 0, "missing_fonts": missing_list, "count": len(missing_list)}
+        missing_list = sorted(missing_fonts)
+        data = {"passed": not missing_list, "missing_fonts": missing_list, "count": len(missing_list)}
+        return {**data, "warnings": warnings} if warnings else data
 
     result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
-        if r["passed"]:
-            return ToolResult.ok("所有字体均已安装", **r)
-        return ToolResult.ok(f"发现 {r['count']} 个缺失字体", **r)
-    return ToolResult.fail(result.get("error", "字体检查失败"))
-
-
-
+        message = "All fonts are installed" if r["passed"] else f"{r['count']} fonts are missing"
+        return ToolResult.ok(message, **r)
+    return respond(result, document_path=document_path)

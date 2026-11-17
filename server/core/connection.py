@@ -52,6 +52,17 @@ def _hresult(exc):
     return getattr(exc, "hresult", 0) & 0xFFFFFFFF
 
 
+def error_text(exc) -> str:
+    """A readable message for an exception: CorelDRAW's own description for COM errors, else str(exc)."""
+    excepinfo = getattr(exc, "excepinfo", None)
+    if isinstance(excepinfo, tuple) and len(excepinfo) > 5 and excepinfo[2]:
+        code = (excepinfo[5] or getattr(exc, "hresult", 0)) & 0xFFFFFFFF
+        return f"CorelDRAW error: {str(excepinfo[2]).strip()} (HRESULT 0x{code:08X})"
+    if hasattr(exc, "hresult") and getattr(exc, "strerror", None):
+        return f"COM error: {exc.strerror} (HRESULT 0x{_hresult(exc):08X})"
+    return str(exc) or type(exc).__name__
+
+
 def _registered_server_is_running(prog_id):
     """Check the configured Corel executable, same Windows user and logon session."""
     clsid = pythoncom.MakeIID(prog_id)
@@ -407,7 +418,7 @@ class CorelDrawConnection:
                 state, error = exc.state, str(exc)
                 self._clear_proxy(error)
             else:
-                state, error = ("tool_error" if action_started else "unavailable"), str(exc) or type(exc).__name__
+                state, error = ("tool_error" if action_started else "unavailable"), error_text(exc)
                 if not action_started:
                     self._clear_proxy(error)
             return {"success": False, "state": state, "result": None, "error": error}

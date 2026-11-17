@@ -17,6 +17,7 @@ from typing import Literal
 from core import colorspec
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import respond
 from core.structure import CONTAINER_TYPES, StaleStructureError, invalidate, locate_entries, page_layers, shape_range
 from core.targets import resolve_document, resolve_page
 from core.units import unit_name
@@ -403,21 +404,15 @@ def replace_color(
     dry_run: bool = True,
     max_ids: int = 200,
 ) -> ToolResult:
-    """Replace one color with another on every matching object part in a scope. Dry run by default.
+    """Replace one color with another on every matching object part in pages and layers. Dry run by default.
 
-    from_color / to_color use the set_fill color specs (spot name with optional tint and palette, CMYK, RGB,
-    registration, donor {"from_shape_id", "part"}; to_color may also be "none"). Spots match by name ignoring
-    the PANTONE prefix, case and punctuation, at any tint unless from_color gives one; a spot replaced by a
-    spot without a tint keeps each object's tint. CMYK/RGB match by components within tolerance.
-    pages: one-based (default all); layers: exact names (default all); parts: fill, outline, text (fill and
-    outline of each character run; other runs keep their colors), fountain_stops, effects (contour fill/
-    outline/fill-to and drop-shadow colors; the generated objects follow). Master layers change only with
-    include_master_layers (they print on every page).
-    dry_run=True changes nothing and lists exactly what would change, grouped by part, old and new color
-    (count exact, up to max_ids IDs per group; text runs with ranges), and what cannot change and why (locked
-    or master layer, effect-generated objects, unread long text). dry_run=False applies everything as one
-    undo step, walks the scope again, verifies every change (verification_errors) and lists anything that
-    still matches (remaining).
+    from_color, to_color: color specs (see set_fill; to_color may be "none"). Spots match by name ignoring the
+    PANTONE prefix, case and punctuation, at any tint unless from_color gives one; a spot without a tint keeps
+    each object's tint. CMYK/RGB match within tolerance. parts: fill, outline, text (per character run),
+    fountain_stops, effects (contour and drop-shadow colors). Master layers change only with
+    include_master_layers. dry_run=True lists what would change (per part, old and new color, up to max_ids IDs)
+    and what cannot change and why. dry_run=False applies it as one undo step, verifies every change and
+    lists anything that still matches (remaining).
     """
     started = time.monotonic()
     wanted_parts = list(dict.fromkeys(parts)) if parts else list(_PARTS)
@@ -518,13 +513,7 @@ def replace_color(
                 invalidate(actual_path)
 
     result = conn.read_call(run) if dry_run else conn.safe_call(run)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if data.get("verification_errors"):
-        return ToolResult(success=False, data=data, error=f"Read-back differs on {len(data['verification_errors'])} "
-                                                          "changes; the replacement is one undo step (undo)")
-    return ToolResult.ok(**data)
+    return respond(result, document_path=document_path)
 
 
 def _effect_hint(use, scan, parts):

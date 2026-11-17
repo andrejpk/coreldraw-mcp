@@ -2028,4 +2028,58 @@ check("catalog: E07 tools added, 25 legacy shape/layer tools removed",
                "delete_shape_by_id", "create_rectangle", "create_ellipse", "create_line", "import_svg",
                "import_image", "ungroup_shapes"} & listed7, sorted(listed7))
 
+# 19. E19+E12: catalog diet and feedback quality ----------------------------------------------------------------
+import catalog_size  # noqa: E402
+
+summary19, rows19 = asyncio.run(catalog_size.measure())
+check("catalog budget: list_tools within the budget in catalog_size.BUDGET", not catalog_size.over_budget(summary19),
+      {k: summary19[k] for k in catalog_size.BUDGET} | {"problems": catalog_size.over_budget(summary19)})
+check("catalog: no tool declares an output schema (the shared ToolResult schema is gone)",
+      summary19["output_schema_chars"] == 0)
+check("catalog: every description is English", not summary19["cjk_descriptions"], summary19["cjk_descriptions"])
+check("catalog: server instructions carry the shared conventions",
+      0 < summary19["instructions_chars"] and summary19["instructions_chars"] <= catalog_size.BUDGET["instructions_chars"])
+hints19 = {r["name"]: r["annotations"] for r in rows19}
+check("catalog: read-only tools are annotated readOnlyHint",
+      all(hints19[name].get("read_only_hint") for name in ("list_documents", "inspect_shapes", "get_ink_inventory",
+                                                            "list_layers", "get_print_separation_settings",
+                                                            "get_coreldraw_status"))
+      and not any(hints19[name].get("read_only_hint") for name in ("set_fill", "delete_shapes", "find_shapes")),
+      hints19)
+check("catalog: optional parameters are advertised without a null branch",
+      all(
+          "anyOf" not in prop or {"type": "null"} not in prop["anyOf"]
+          for tool in asyncio.run(_catalog()) for prop in tool.input_schema.get("properties", {}).values()))
+
+E19 = Path(FX) / "e19"
+E19.mkdir(exist_ok=True)
+LY19 = str(E19 / "layers.cdr")
+shutil.copyfile(TEMPLATES / "layers.cdr", LY19)
+r = call("open_document", path=LY19, activate=False)
+check("feedback setup: open layers.cdr copy", r["success"], r.get("error"))
+r = call("set_fill", document_path=LY19, page_index=1, shape_ids=["999999"], color=None, fountain=None,
+         from_shape_id=None, text_range=None)
+check("feedback: explicit nulls for optional parameters are still accepted (argument check runs)",
+      not r["success"] and "exactly one" in r["error"], r.get("error"))
+r = call("set_fill", document_path=LY19, page_index=1, shape_ids=["999999"], color="CMYK 0/0/0/100")
+check("feedback: a missing shape ID names the page and the next step, with state and target in data",
+      not r["success"] and "page 1" in r["error"] and "find_shapes" in r["error"]
+      and r["data"] == {"state": "tool_error", "document_path": LY19, "page_index": 1}, r)
+r = call("inspect_shapes", document_path=LY19, page_index=99)
+check("feedback: an out-of-range page is a tool_error with the target", not r["success"]
+      and r["data"]["state"] == "tool_error" and r["data"]["page_index"] == 99 and "page_index" in r["error"], r)
+r = call("inspect_shapes", document_path=str(E19 / "not-open.cdr"), page_index=1)
+check("feedback: a document that is not open points to list_documents",
+      not r["success"] and "list_documents" in r["error"], r.get("error"))
+r = call("list_documents")
+entry19 = entry(r, LY19)
+check("units: list_documents reports the unit as a name", entry19 and entry19["unit"] in ("in", "mm", "cm", "pt"),
+      entry19 and entry19["unit"])
+r = call("check_text_overflow", shape_id="nope", document_path="")
+check("feedback: legacy text tools answer in English with a next step",
+      not r["success"] and r["error"].isascii() and ("find_shapes" in r["error"] or "open_document" in r["error"]),
+      r.get("error"))
+r = call("close_document", document_path=LY19, discard_changes=True)
+check("cleanup: close the E19 layers.cdr copy", r["success"], r.get("error"))
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

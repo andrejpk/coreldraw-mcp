@@ -17,6 +17,7 @@ from typing import Literal
 from core import colorspec
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import failure
 from core.structure import (
     CONTAINER_TYPES,
     EFFECT_GROUP_TYPES,
@@ -831,24 +832,22 @@ def find_shapes(
     offset: int = 0,
     select: bool = False,
 ) -> ToolResult:
-    """Find objects by what they are, including cleanup artifacts that make bad films. Read-only unless select.
+    """Find objects by criteria, including cleanup artifacts that make bad films. Read-only unless select=True.
 
-    pages: one-based (default all); layers: exact names; master layers included. Presets (printable layers
-    unless filters.printable is set): zero_size (or zero area without outline), invisible (no fill/outline,
-    zero-width outline only, ink without area, clipped out, hidden object), stacked_duplicates (same type,
-    bounds, paint, nodes; lists copies above the bottom one), off_page (off or crossing the edge), hairline
-    (outline below threshold, default 0.1 mm), empty_text, tiny (inked, larger side below threshold,
-    default 0.1 mm; tiny_in_cluster = 20+ under one parent), hidden_printable_content, registration_on_art
-    (registration overlapping other art; text on text ignored).
-    filters (AND): ids, type ("curve", "text"... or code), name (exact, or glob * ? []), text (substring),
-    color (spec as in set_fill) + color_part fill|outline|text|any + color_tolerance; [min, max] ranges
-    outline_width, size (larger side), area (bbox), depth; intersects/inside [left, bottom, right, top];
-    on_page true|false|"crossing"; booleans printable, visible, locked, master, effect, overprint_fill,
-    overprint_outline; powerclip "container"|"content". Lengths and threshold in unit (in, mm, cm, pt;
-    default the document unit). cql: read-only CorelDRAW query over $item ("$item.Outline.Width > 0.1").
-    Returns count, counts by reason and page, summary, records (id, type, page, layer, name, bounds
-    [left, bottom, right, top] in document units, text, reason, duplicate_of) from offset, up to limit
-    (1-1000); follow next_offset. select=True makes all matches the UI selection (one page; activates it).
+    pages (default all), layers (exact names; master layers included). Presets, on printable layers unless
+    filters.printable is set: zero_size, invisible (no visible paint, clipped out or hidden), stacked_duplicates
+    (copies above the bottom one), off_page (off or crossing the edge), hairline (outline below threshold,
+    default 0.1 mm), empty_text, tiny (inked, larger side below threshold, default 0.1 mm; tiny_in_cluster: 20+
+    under one parent), hidden_printable_content, registration_on_art.
+    filters (all must match): ids, type ("curve", "text"...), name (exact or glob), text (substring), color
+    (a color spec, see set_fill) + color_part fill|outline|text|any + color_tolerance; [min, max] ranges
+    outline_width, size (larger side), area, depth; intersects/inside [left, bottom, right, top]; on_page
+    true|false|"crossing"; booleans printable, visible, locked, master, effect, overprint_fill, overprint_outline;
+    powerclip "container"|"content". Lengths and threshold in unit (default: the document unit). cql: a
+    read-only CorelDRAW query on $item ("$item.Outline.Width > 0.1").
+    Returns count, counts per reason and page, summary, and records (id, type, page, layer, name, bounds, text,
+    reason, duplicate_of) from offset, up to limit (1-1000): page through with next_offset. select=True selects
+    every match in the window (one page; activates the document).
     """
     if not 1 <= limit <= 1000 or offset < 0:
         return ToolResult.fail("limit must be between 1 and 1000 and offset nonnegative")
@@ -863,7 +862,7 @@ def find_shapes(
     else:
         scanned = conn.read_call(lambda: _scan(conn, document_path, pages, layers, query_args))
         if not scanned["success"]:
-            return ToolResult.fail(scanned["error"])
+            return failure(scanned, document_path=document_path)
         result = scanned["result"]
         _results_cache.pop(key, None)
         _results_cache[key] = {"generation": conn.generation, "result": result}
@@ -883,11 +882,12 @@ def find_shapes(
         if len(result["pages"]) != 1:
             return ToolResult(success=False, error="select=True needs exactly one page (pass pages=[n])", data=data)
         if result["missing_ids"]:
-            return ToolResult(success=False, error="Some requested IDs were not found; selection unchanged", data=data)
+            return ToolResult(success=False, error="Some requested IDs were not found (see missing_ids); selection "
+                              "unchanged", data=data)
         selected = _select(conn, document_path, result["pages"][0], [m["id"] for m in matches])
         _results_cache.pop(key, None)
         if not selected["success"]:
-            return ToolResult(success=False, error=selected["error"], data=data)
+            return ToolResult(success=False, error=selected["error"], data={**data, "state": selected.get("state")})
         data.update(selected["result"])
         if data["selected_count"] != len(matches) or data.get("not_selected"):
             return ToolResult(success=False, error="CorelDRAW selected a different set of shapes (locked layers or "

@@ -14,6 +14,7 @@ from typing import Literal
 from core import colorspec
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import respond
 from core.shapeops import (
     ANY_TYPE,
     BITMAP,
@@ -78,14 +79,7 @@ def _page_edit(document_path, page_index, body) -> ToolResult:
         finally:
             invalidate(actual_path)
 
-    result = conn.safe_call(run)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if data.get("verification_errors"):
-        return ToolResult(success=False, data=data, error=f"Read-back differs ({len(data['verification_errors'])} "
-                                                          "problems); the edit is one undo step (undo)")
-    return ToolResult.ok(**data)
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
 
 
 def _drawing_layer(doc, page, name):
@@ -150,12 +144,12 @@ def create_shape(
     corner_radius: float = 0.0,
     name: str | None = None,
 ) -> ToolResult:
-    """Create a rectangle, ellipse or line on an exact page and layer; one verified undo step.
+    """Create a rectangle, ellipse or line on an exact page and layer. One undo step, read back.
 
-    Lengths in unit; coordinates as inspect_shapes bounds (y up). rectangle/ellipse: bottom-left x, y and width,
-    height (corner_radius for rectangles); line: x, y to x2, y2. layer: an editable layer of this page (default:
-    the active layer if on this page, else its top editable layer). fill/outline: color specs as set_fill
-    ("PANTONE 485 C", "CMYK 0/0/0/100", "none", ...); outline_width in unit. Returns shape_id, layer, bounds, paint.
+    Lengths in unit, page coordinates (y up). rectangle/ellipse: bottom-left x, y plus width, height
+    (corner_radius: rectangles); line: x, y to x2, y2. layer: an editable layer of this page (default: the active
+    layer if on this page, else the top editable one). fill, outline: color specs (see set_fill); outline_width
+    in unit. Returns shape_id, layer, bounds and paint.
     """
     if kind not in ("rectangle", "ellipse", "line"):
         return ToolResult.fail("kind must be rectangle, ellipse or line")
@@ -246,12 +240,12 @@ def import_file(
     height: float | None = None,
     unit: Unit | None = None,
 ) -> ToolResult:
-    """Import a file CorelDRAW reads (SVG, AI, EPS, PDF, PNG, JPEG, TIFF...) onto an exact page and layer;
-    one verified undo step.
+    """Import a file CorelDRAW reads (SVG, AI, EPS, PDF, PNG, JPEG, TIFF...) onto an exact page and layer.
+    One undo step, read back.
 
-    layer as create_shape. x, y (unit) place the bottom-left of the imported objects' box (default: page center);
-    width and/or height (one keeps the aspect ratio) resize it. The active page is kept. Returns new_ids
-    (top-level objects, e.g. one group) with type, layer and bounds.
+    layer as create_shape. x, y (unit) place the bottom-left of the imported box (default: centered on the
+    page); width and/or height resize it (one keeps the aspect ratio). Returns new_ids (top-level objects)
+    with type, layer and bounds.
     """
     if not isinstance(path, str) or not os.path.isabs(path) or not os.path.isfile(path):
         return ToolResult.fail(f"Not a file (absolute path required): {path!r}")
@@ -326,11 +320,11 @@ def group_shapes(
     action: Literal["group", "ungroup", "ungroup_all"] = "group",
     name: str | None = None,
 ) -> ToolResult:
-    """Group exact top-level shapes of one layer, or ungroup exact groups; one verified undo step.
+    """Group exact top-level shapes of one layer, or ungroup exact groups. One undo step, read back.
 
-    group: the group takes the topmost member's stacking place and keeps their order (name optional).
-    ungroup: direct children replace the group; ungroup_all also dissolves nested groups. Refuses locked/master
-    layers, effect objects, PowerClip contents. Returns group_id and member_ids, or each group's child_ids.
+    group: the group takes the topmost member's place in the stack (name optional). ungroup: the direct
+    children replace the group; ungroup_all also dissolves nested groups. Refuses PowerClip contents. Returns
+    group_id and member_ids, or each group's child_ids.
     """
     if action not in ("group", "ungroup", "ungroup_all"):
         return ToolResult.fail("action must be group, ungroup or ungroup_all")
@@ -430,10 +424,10 @@ def powerclip(
     shape_ids: list[str] | None = None,
     center: bool = False,
 ) -> ToolResult:
-    """Place exact shapes into a PowerClip container, or extract its contents; one verified undo step.
+    """Place exact shapes into a PowerClip container, or extract its contents. One undo step, read back.
 
-    place: shape_ids (not inside groups) keep their position unless center=true. extract: contents return above
-    the container. Refuses locked/master layers and effect objects. Returns content_ids or extracted_ids.
+    place: shape_ids (not inside groups) keep their position unless center=true. extract: the contents return
+    above the container. Returns content_ids or extracted_ids.
     """
     if action not in ("place", "extract"):
         return ToolResult.fail("action must be place or extract")
@@ -488,10 +482,10 @@ def powerclip(
 # --- delete_shapes ------------------------------------------------------------------------------------------------
 
 def delete_shapes(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
-    """Delete exact shapes (groups with their members) from one page; one verified undo step.
+    """Delete exact shapes (groups with their members) from one page. One undo step, read back.
 
-    Refuses, deleting nothing, locked/master layers, effect groups and effect-generated objects (delete the control
-    shape), PowerClip contents (extract first), shapes inside a targeted group. Returns deleted_ids.
+    Refuses effect groups and effect-generated objects (delete the control shape), PowerClip contents
+    (extract first) and shapes inside a targeted group. Returns deleted_ids.
     """
     def body(app, doc, page, targets):
         _in_place(targets)

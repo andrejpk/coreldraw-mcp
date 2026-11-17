@@ -12,6 +12,7 @@ from typing import Literal
 
 from core.connection import get_connection
 from core.models import ToolResult
+from core.results import respond
 from core.shapeops import (
     ANY_TYPE,
     EDIT_BUDGET_SECONDS,
@@ -55,12 +56,11 @@ def _pages(doc, pages):
 
 
 def list_layers(document_path: str, pages: list[int] | None = None) -> ToolResult:
-    """List each page's layers (or pages=[...], one-based) of an exact document, front first, masters
-    where they stack. Read-only.
+    """List the layers of every page (or of pages), front first, master layers where they stack. Read-only.
 
-    Per layer: name, master (shared by every page), special (guides/desktop/grid), visible, printable,
-    editable/locked, color (#RRGGBB), objects (top level), objects_total (with group members and PowerClip
-    contents). Also the active layer and the dirty flag.
+    Per layer: name, master (shared by every page), special (guides, desktop, grid), visible, printable,
+    editable/locked, color, objects (top level) and objects_total (with group members and PowerClip contents).
+    Also the active layer and the dirty flag.
     """
     conn = get_connection()
 
@@ -87,8 +87,7 @@ def list_layers(document_path: str, pages: list[int] | None = None) -> ToolResul
                 "active_layer": {"name": active.Name, "master": bool(active.Master)} if active is not None else None,
                 "pages": out}
 
-    result = conn.read_call(read)
-    return ToolResult.ok(**result["result"]) if result["success"] else ToolResult.fail(result["error"])
+    return respond(conn.read_call(read), document_path=document_path)
 
 
 @contextmanager
@@ -133,14 +132,7 @@ def _layer_edit(document_path, page_index, body) -> ToolResult:
         finally:
             invalidate(actual_path)
 
-    result = conn.safe_call(run)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if data.get("verification_errors"):
-        return ToolResult(success=False, data=data, error="CorelDRAW did not apply every change (see "
-                                                          "verification_errors); the edit is one undo step (undo)")
-    return ToolResult.ok(**data)
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
 
 
 def set_layer_properties(
@@ -153,11 +145,10 @@ def set_layer_properties(
     rename: str | None = None,
     master: bool = False,
 ) -> ToolResult:
-    """Set visible, printable, editable (false locks) and/or rename one exact layer; one undo step.
+    """Set visible, printable, editable (false locks) and/or rename one layer of a page. One undo step, read back.
 
-    layer_name is a layer of page page_index; a master layer only with master=true (changes every page). Special
-    layers (guides, desktop, grid) take only visible and printable. Returns flags before and after (read back)
-    and the dirty flag (any change marks the document modified).
+    A master layer needs master=true (it changes every page). Special layers (guides, desktop, grid) take only
+    visible and printable. Returns the flags before and after and the dirty flag.
     """
     changes = {key: value for key, value in (("visible", visible), ("printable", printable), ("editable", editable))
                if value is not None}
@@ -208,9 +199,8 @@ def create_layer(
     editable: bool = True,
     color: str | None = None,
 ) -> ToolResult:
-    """Create a layer on top of page page_index, or a master layer (master=true, every page), with its
-    flags and an optional color "#RRGGBB". One undo step; the active layer stays. Refuses a name already used on
-    the page. Returns the layer read back.
+    """Create a layer on top of a page, or a master layer (master=true, on every page), with its flags and an
+    optional color "#RRGGBB". One undo step; the active layer stays. Refuses a name the page already uses.
     """
     if not isinstance(name, str) or not name.strip():
         return ToolResult.fail("name must be a non-empty layer name")
@@ -260,11 +250,10 @@ def move_shapes_to_layer(
     layer_name: str,
     position: Literal["top", "bottom"] = "top",
 ) -> ToolResult:
-    """Move exact top-level shapes to the top or bottom of another layer of the same page; one undo step.
+    """Move exact top-level shapes to the top or bottom of another layer of the same page. One undo step.
 
-    Relative stacking order is kept and the active layer does not change. Another page's layer, a master layer
-    or a locked layer is refused, as are sources on locked/master layers, inside groups, effect objects and
-    PowerClip contents. Returns each shape's previous layer and stacking index (1 = front), read back.
+    Keeps their relative order and the active layer. Refuses master or locked target layers, group members,
+    effect objects and PowerClip contents. Returns each shape's previous layer and stacking index (1 = front).
     """
     if position not in ("top", "bottom"):
         return ToolResult.fail("position must be top or bottom")

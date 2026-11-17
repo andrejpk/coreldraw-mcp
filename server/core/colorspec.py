@@ -332,7 +332,7 @@ def _document_spots(doc):
             if color.Type in (_PANTONE, _SPOT) or color.IsSpot:
                 spots.append((color.Name, index))
         except Exception:
-            continue
+            continue  # a palette entry without a readable type is not a usable spot
     return spots
 
 

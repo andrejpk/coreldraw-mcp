@@ -80,12 +80,11 @@ def apply_contour(
     outline: str | dict | None = None,
     corner: Literal["miter", "round", "bevel"] = "miter",
 ) -> ToolResult:
-    """Apply a contour effect to exact shapes without one, as one undo step, and read it back.
+    """Apply a contour effect to exact shapes that have none. One undo step, read back.
 
-    offset (pt default) between steps; corner miter|round|bevel; fill / outline: color specs as in set_fill
-    (omitted: CorelDRAW defaults). Refuses groups, bitmaps, effect-generated objects, existing contours, locked
-    or master layers. Returns each contour (direction, offset in document units, steps, corner, fill, group_id).
-    For a verified combined underbase or spread use offset_silhouette.
+    offset: distance between steps, in unit. fill, outline: color specs (see set_fill; default: CorelDRAW's).
+    Refuses groups, bitmaps and shapes with a contour. Returns each contour (direction, offset, steps, corner,
+    fill, group_id). For one combined, measured underbase or spread shape use offset_silhouette.
     """
     if direction not in _DIRECTIONS or corner not in _CORNERS or unit not in MEASUREMENT_UNITS:
         return ToolResult.fail(f"direction inside/outside/to_center, corner miter/round/bevel, unit one of "
@@ -157,10 +156,9 @@ def separate_effect(
     shape_ids: list[str],
     effect: Literal["contour", "drop_shadow", "extrude", "blend"] = "contour",
 ) -> ToolResult:
-    """Separate an effect into plain objects (Break Contour/Shadow Apart) on control shapes or their effect groups.
-
-    One undo step. Refuses shapes without exactly one such effect and locked or master layers. Returns per
-    shape control_id, the new top-level result_ids and every leaf_id.
+    """Break an effect apart into plain objects (Break Contour/Shadow Apart), given control shapes or their
+    effect groups. One undo step. Refuses shapes without exactly one such effect. Returns per shape control_id,
+    the new top-level result_ids and every leaf_id.
     """
     if effect not in _SEPARABLE:
         return ToolResult.fail(f"effect must be one of {', '.join(_SEPARABLE)}")
