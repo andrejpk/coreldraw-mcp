@@ -1,21 +1,20 @@
 """T5: per-page proof PDF via MCP, Ghostscript plate render, compare with client manifest."""
 import sys, json, time, subprocess; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
 from pathlib import Path
-from audit_lib import Session
+from audit_lib import RENDER, RUN, Session
 GS = r"C:\Program Files\gs\gs10.08.0\bin\gswin64c.exe"
 PY = r"C:\repos\gh\coreldraw-mcp\.venv\Scripts\python.exe"
-RENDER = r"C:\CorelMcpLab\wt\e01\server\render_separation_proof.py"
 PROC = {"Cyan", "Magenta", "Yellow", "Black"}
 tag = sys.argv[1]
-with Session(r"C:\CorelMcpLab\runs\e01\calls.jsonl") as s:
+with Session(RUN + r"\calls.jsonl") as s:
     for f in sys.argv[2:]:
         key = f[:12].strip()
-        inv = json.load(open(rf"C:\CorelMcpLab\runs\e01\inv\{key}.json", encoding="utf-8"))
-        t2 = json.load(open(rf"C:\CorelMcpLab\runs\e01\inv\{key}.t2.json", encoding="utf-8"))
+        inv = json.load(open(RUN + rf"\inv\{key}.json", encoding="utf-8"))
+        t2 = json.load(open(RUN + rf"\inv\{key}.t2.json", encoding="utf-8"))
         doc = inv["doc"]; s.task = "T5 " + key
-        s.call("open_template", {"path": doc}, note="re-activate")
+        s.call("open_document", {"path": doc}, note="re-activate")
         for p in inv["pages"]:
-            pdf = Path(rf"C:\CorelMcpLab\runs\e01\proofs\{key}_{tag}_p{p}.pdf")
+            pdf = Path(RUN + rf"\proofs\{key}_{tag}_p{p}.pdf")
             r = s.call("export_page_proof_pdf", {"document_path": doc, "page_index": int(p), "output_path": str(pdf)})
             if not r.get("success"): print(key, p, "EXPORT FAIL", r.get("error")); continue
             outdir = pdf.with_suffix("")

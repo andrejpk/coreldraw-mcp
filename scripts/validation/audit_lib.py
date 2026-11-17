@@ -11,12 +11,18 @@ error, so task tables can be built from the log. Unlike mc.call, args is a dict,
 """
 import asyncio
 import json
+import os
 import threading
 import time
 
 from fastmcp import Client
 
 URL = "http://127.0.0.1:8765/mcp"
+#: Run folder of the audit (logs, inventories, copies). E01 used runs\e01; set AUDIT_RUN to rerun elsewhere.
+RUN = os.environ.get("AUDIT_RUN", r"C:\CorelMcpLab\runs\e01")
+#: This checkout's separation renderer.
+RENDER = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "server",
+                                       "render_separation_proof.py"))
 
 
 class Session:

@@ -5,6 +5,7 @@ import os
 from core.connection import get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.targets import private_document, save_as
 
 
 
@@ -45,39 +46,38 @@ def populate_title_block(
     fields = {k: v for k, v in fields.items() if v}
 
     def _populate():
-        doc = conn.app.OpenDocument(template_path)
-        page = doc.ActivePage
-        replaced = {}
-        skipped = []
+        with private_document(conn.app, template_path) as doc:
+            page = doc.ActivePage
+            replaced = {}
+            skipped = []
 
-        for s in page.Shapes:
-            try:
-                if s.Type == CDR_TEXT_SHAPE and s.Name in fields:
-                    s.Text.Story = str(fields[s.Name])
-                    replaced[s.Name] = str(fields[s.Name])
-            except Exception:
-                skipped.append(s.Name)
+            for s in page.Shapes:
+                try:
+                    if s.Type == CDR_TEXT_SHAPE and s.Name in fields:
+                        s.Text.Story = str(fields[s.Name])
+                        replaced[s.Name] = str(fields[s.Name])
+                except Exception:
+                    skipped.append(s.Name)
 
-        # 遍历所有页（工程图可能多页）
-        for pg in doc.Pages:
-            if pg.Index == page.Index:
-                continue
-            try:
-                for s in pg.Shapes:
-                    if s.Type == CDR_TEXT_SHAPE and s.Name in fields and s.Name not in replaced:
-                        try:
-                            s.Text.Story = str(fields[s.Name])
-                            replaced[s.Name] = str(fields[s.Name])
-                        except Exception:
-                            skipped.append(s.Name)
-            except Exception:
-                pass
+            # 遍历所有页（工程图可能多页）
+            for pg in doc.Pages:
+                if pg.Index == page.Index:
+                    continue
+                try:
+                    for s in pg.Shapes:
+                        if s.Type == CDR_TEXT_SHAPE and s.Name in fields and s.Name not in replaced:
+                            try:
+                                s.Text.Story = str(fields[s.Name])
+                                replaced[s.Name] = str(fields[s.Name])
+                            except Exception:
+                                skipped.append(s.Name)
+                except Exception:
+                    pass
 
-        dirpath = os.path.dirname(save_path)
-        if dirpath:
-            os.makedirs(dirpath, exist_ok=True)
-        doc.SaveAs(save_path)
-        doc.Close()
+            dirpath = os.path.dirname(save_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+            save_as(conn.app, doc, save_path)
         not_found = [k for k in fields if k not in replaced]
         return {
             "output": save_path,
@@ -117,38 +117,37 @@ def assemble_engineering_drawing(
 
     def _assemble():
         # 打开工程图框架
-        doc = conn.app.OpenDocument(frame_template_path)
-        page = doc.ActivePage
+        with private_document(conn.app, frame_template_path) as doc:
+            page = doc.ActivePage
 
-        # 填充标题栏
-        replaced_fields = {}
-        field_map = {
-            "title_project_name": fields.get("project_name", ""),
-            "title_order_no": fields.get("order_no", ""),
-            "title_part_no": fields.get("part_no", ""),
-            "title_designer": fields.get("designer", ""),
-            "title_material": fields.get("material", ""),
-            "title_finish": fields.get("finish", ""),
-            "title_scale": fields.get("scale", "1:1"),
-            "title_sheet_no": fields.get("sheet_no", ""),
-            "title_revision": fields.get("revision", "A"),
-        }
-        for s in page.Shapes:
-            try:
-                if s.Type == CDR_TEXT_SHAPE and s.Name in field_map and field_map[s.Name]:
-                    s.Text.Story = str(field_map[s.Name])
-                    replaced_fields[s.Name] = field_map[s.Name]
-            except Exception:
-                pass
+            # 填充标题栏
+            replaced_fields = {}
+            field_map = {
+                "title_project_name": fields.get("project_name", ""),
+                "title_order_no": fields.get("order_no", ""),
+                "title_part_no": fields.get("part_no", ""),
+                "title_designer": fields.get("designer", ""),
+                "title_material": fields.get("material", ""),
+                "title_finish": fields.get("finish", ""),
+                "title_scale": fields.get("scale", "1:1"),
+                "title_sheet_no": fields.get("sheet_no", ""),
+                "title_revision": fields.get("revision", "A"),
+            }
+            for s in page.Shapes:
+                try:
+                    if s.Type == CDR_TEXT_SHAPE and s.Name in field_map and field_map[s.Name]:
+                        s.Text.Story = str(field_map[s.Name])
+                        replaced_fields[s.Name] = field_map[s.Name]
+                except Exception:
+                    pass
 
-        # 导入设计文件到框架
-        doc.Import(design_path)
+            # 导入设计文件到框架
+            doc.Import(design_path)
 
-        dirpath = os.path.dirname(output_path)
-        if dirpath:
-            os.makedirs(dirpath, exist_ok=True)
-        doc.SaveAs(output_path)
-        doc.Close()
+            dirpath = os.path.dirname(output_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+            save_as(conn.app, doc, output_path)
         return {
             "output": output_path,
             "design_imported": design_path,

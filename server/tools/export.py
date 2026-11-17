@@ -4,6 +4,8 @@ import os
 
 from core.connection import get_connection
 from core.models import ToolResult
+from core.targets import call_on_active
+from core.units import MILLIMETER, convert
 
 # 导出滤镜常量（CorelDRAW X6/16.1 COM 滤镜编号）
 _CDR_DXF = 1296
@@ -18,7 +20,6 @@ _PDF_CURRENT_PAGE = 1
 _CDR_RGB_COLOR_IMAGE = 4
 _CDR_NORMAL_ANTIALIASING = 1
 _CDR_COMPRESSION_NONE = 0
-_CDR_MILLIMETER = 3
 
 _DXF_VERSION = {"R12": 0, "R14": 1, "R2000": 3, "R2004": 4}
 
@@ -31,18 +32,17 @@ def _ensure_dir(path: str) -> None:
 
 
 def _page_size_mm(doc):
-    """获取页面尺寸（mm）"""
+    """Active page size converted to mm, without changing the document unit."""
     try:
-        doc.Unit = _CDR_MILLIMETER
         page = doc.ActivePage
-        return page.SizeWidth, page.SizeHeight
+        app = get_connection().app
+        return convert(page.SizeWidth, doc.Unit, MILLIMETER, app), convert(page.SizeHeight, doc.Unit, MILLIMETER, app)
     except Exception:
         return 0, 0
 
 
 def _prepare_current_page_export(doc) -> int:
     """Make export state explicit so CorelDRAW does not reuse stale UI settings."""
-    doc.Unit = _CDR_MILLIMETER
     page = doc.ActivePage
     shapes_count = 0
     try:
@@ -80,16 +80,19 @@ def _verify_exported(path: str) -> int:
 
 
 def _page_export_area(app, doc):
-    page_w_mm, page_h_mm = _page_size_mm(doc)
-    if page_w_mm <= 0 or page_h_mm <= 0:
+    """The active page as a rectangle in the document unit."""
+    page = doc.ActivePage
+    width, height = page.SizeWidth, page.SizeHeight
+    if width <= 0 or height <= 0:
         return None
     try:
-        return app.CreateRect(0, 0, page_w_mm, page_h_mm)
+        return app.CreateRect(0, 0, width, height)
     except Exception:
         return None
 
 
 def export_pdf(
+    document_path: str,
     path: str,
     color_profile: str = "ISO_Coated_v2",
     bleed: float = 3.0,
@@ -97,7 +100,10 @@ def export_pdf(
     multi_page: bool = False,
     pdfx_version: str = "",
 ) -> ToolResult:
-    """导出印刷级 PDF。支持色彩配置、出血、裁切线和多页导出。可选 PDF/X 标准。"""
+    """导出印刷级 PDF。支持色彩配置、出血、裁切线和多页导出。可选 PDF/X 标准。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -150,14 +156,17 @@ def export_pdf(
             "file_size": file_size,
         }
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"PDF 已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出 PDF 失败"))
 
 
-def export_dxf(path: str, version: str = "R14", layer_filter: str = "", export_hidden: bool = False) -> ToolResult:
-    """导出 DXF 文件（用于激光雕刻/切割）。支持版本选择和图层过滤。"""
+def export_dxf(document_path: str, path: str, version: str = "R14", layer_filter: str = "", export_hidden: bool = False) -> ToolResult:
+    """导出 DXF 文件（用于激光雕刻/切割）。支持版本选择和图层过滤。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     dxf_ver = _DXF_VERSION.get(version, 1)
@@ -197,14 +206,17 @@ def export_dxf(path: str, version: str = "R14", layer_filter: str = "", export_h
             "file_size": file_size,
         }
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"DXF 已导出: {path} (v{version})", **result["result"])
     return ToolResult.fail(result.get("error", "导出 DXF 失败"))
 
 
-def export_ai(path: str) -> ToolResult:
-    """导出 Adobe Illustrator AI 格式。"""
+def export_ai(document_path: str, path: str) -> ToolResult:
+    """导出 Adobe Illustrator AI 格式。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -217,14 +229,17 @@ def export_ai(path: str) -> ToolResult:
         file_size = _verify_exported(path)
         return {"path": path, "format": "ai", "shapes_count": shapes_count, "file_size": file_size}
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"AI 已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出 AI 失败"))
 
 
-def export_svg(path: str) -> ToolResult:
-    """导出 SVG 矢量格式。"""
+def export_svg(document_path: str, path: str) -> ToolResult:
+    """导出 SVG 矢量格式。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -237,14 +252,17 @@ def export_svg(path: str) -> ToolResult:
         file_size = _verify_exported(path)
         return {"path": path, "format": "svg", "shapes_count": shapes_count, "file_size": file_size}
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"SVG 已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出 SVG 失败"))
 
 
-def export_png(path: str, dpi: int = 300, width: int = 0, background_transparent: bool = False) -> ToolResult:
-    """导出 PNG 位图。可指定 DPI、宽度和透明背景。"""
+def export_png(document_path: str, path: str, dpi: int = 300, width: int = 0, background_transparent: bool = False) -> ToolResult:
+    """导出 PNG 位图。可指定 DPI、宽度和透明背景。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -306,14 +324,17 @@ def export_png(path: str, dpi: int = 300, width: int = 0, background_transparent
             "file_size": file_size,
         }
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"PNG 已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出 PNG 失败"))
 
 
-def export_jpeg(path: str, quality: int = 85, dpi: int = 300) -> ToolResult:
-    """导出 JPEG 位图。可指定压缩质量(0-100)和分辨率。"""
+def export_jpeg(document_path: str, path: str, quality: int = 85, dpi: int = 300) -> ToolResult:
+    """导出 JPEG 位图。可指定压缩质量(0-100)和分辨率。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -376,14 +397,17 @@ def export_jpeg(path: str, quality: int = 85, dpi: int = 300) -> ToolResult:
             "file_size": file_size,
         }
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"JPEG 已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出 JPEG 失败"))
 
 
-def export_preview_png(path: str, width: int = 800) -> ToolResult:
-    """导出低分辨率 PNG 预览图，供 AI Agent 进行视觉检查。width 为像素宽度。"""
+def export_preview_png(document_path: str, path: str, width: int = 800) -> ToolResult:
+    """导出低分辨率 PNG 预览图，供 AI Agent 进行视觉检查。width 为像素宽度。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _export():
@@ -445,14 +469,17 @@ def export_preview_png(path: str, width: int = 800) -> ToolResult:
             "file_size": file_size,
         }
 
-    result = conn.safe_call(_export)
+    result = call_on_active(conn, document_path, _export)
     if result["success"]:
         return ToolResult.ok(f"预览图已导出: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导出预览图失败"))
 
 
-def batch_export(pages: str, format: str, output_dir: str) -> ToolResult:
-    """批量导出指定页面。pages 为 "1,2,3" 或 "1-5" 或 "all"，format 支持 pdf/dxf/png。"""
+def batch_export(document_path: str, pages: str, format: str, output_dir: str) -> ToolResult:
+    """批量导出指定页面。pages 为 "1,2,3" 或 "1-5" 或 "all"，format 支持 pdf/dxf/png。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     format = format.lower()
@@ -542,7 +569,7 @@ def batch_export(pages: str, format: str, output_dir: str) -> ToolResult:
 
         return {"format": format, "total": len(results), "results": results}
 
-    result = conn.safe_call(_batch)
+    result = call_on_active(conn, document_path, _batch)
     if result["success"]:
         r = result["result"]
         succeeded = sum(1 for x in r["results"] if x["status"] == "success")

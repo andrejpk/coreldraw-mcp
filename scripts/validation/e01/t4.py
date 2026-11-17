@@ -1,13 +1,14 @@
 """T4: underbase choke/overprint check on screen_job; bottom registration distance on all docs (from inventory + MCP)."""
 import sys, json; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-from audit_lib import Session
-MM_PER_IN = 25.4
-inv = json.load(open(r"C:\CorelMcpLab\runs\e01\inv\screen_job.c.json", encoding="utf-8"))
+from audit_lib import RUN, Session
+inv = json.load(open(RUN + r"\inv\screen_job.c.json", encoding="utf-8"))
+# Bounds are in the document unit; E01 ran with the old forced-mm open, so its inventories are in mm.
+MM_PER_IN = {"in": 1.0, "mm": 25.4}[inv["pages"]["1"].get("unit") or "mm"]
 doc = inv["doc"]; sh = {s["shape_id"]: s for s in inv["pages"]["1"]["shapes"]}
 byname = {s["name"]: s for s in sh.values() if s.get("name")}
-with Session(r"C:\CorelMcpLab\runs\e01\calls.jsonl") as s:
+with Session(RUN + r"\calls.jsonl") as s:
     s.task = "T4 underbase"
-    s.call("open_template", {"path": doc}, note="re-activate")
+    s.call("open_document", {"path": doc}, note="re-activate")
     so = s.call("get_simulate_overprints", {"document_path": doc}); print("simulate", so.get("data"))
     so2 = s.call("set_simulate_overprints", {"document_path": doc, "enabled": True}); print("set sim", so2.get("data"), so2.get("error"))
     # The agent cannot know which underbase belongs to which art except by geometry: pair by bbox containment

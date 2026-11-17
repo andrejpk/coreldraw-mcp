@@ -3,6 +3,7 @@
 from core.connection import get_connection
 from core.drawing import CDR_BITMAP_SHAPE, CDR_CURVE_SHAPE, CDR_GROUP_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.targets import call_on_active
 
 
 def _static_id(shape) -> str:
@@ -73,8 +74,11 @@ def _shape_info(shape) -> dict:
         return {"name": "", "type": -1}
 
 
-def create_rectangle(x: float, y: float, width: float, height: float, corner_radius: float = 0) -> ToolResult:
-    """创建矩形。x,y 为左上角坐标，支持圆角（corner_radius）。"""
+def create_rectangle(document_path: str, x: float, y: float, width: float, height: float, corner_radius: float = 0) -> ToolResult:
+    """创建矩形。x,y 为左上角坐标，支持圆角（corner_radius）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _create():
@@ -84,14 +88,17 @@ def create_rectangle(x: float, y: float, width: float, height: float, corner_rad
         shape.Name = f"rect_{shape.StaticID}"
         return {"shape_id": _static_id(shape), **_shape_info(shape), "corner_radius": corner_radius}
 
-    result = conn.safe_call(_create)
+    result = call_on_active(conn, document_path, _create)
     if result["success"]:
         return ToolResult.ok(f"矩形创建成功: {width}×{height}", **result["result"])
     return ToolResult.fail(result.get("error", "创建矩形失败"))
 
 
-def create_ellipse(cx: float, cy: float, rx: float, ry: float) -> ToolResult:
-    """创建椭圆。cx,cy 为中心坐标，rx,ry 为 X/Y 半径。"""
+def create_ellipse(document_path: str, cx: float, cy: float, rx: float, ry: float) -> ToolResult:
+    """创建椭圆。cx,cy 为中心坐标，rx,ry 为 X/Y 半径。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _create():
@@ -104,14 +111,17 @@ def create_ellipse(cx: float, cy: float, rx: float, ry: float) -> ToolResult:
         shape.Name = f"ellipse_{shape.StaticID}"
         return {"shape_id": _static_id(shape), **_shape_info(shape), "rx": rx, "ry": ry}
 
-    result = conn.safe_call(_create)
+    result = call_on_active(conn, document_path, _create)
     if result["success"]:
         return ToolResult.ok(f"椭圆创建成功: rx={rx}, ry={ry}", **result["result"])
     return ToolResult.fail(result.get("error", "创建椭圆失败"))
 
 
-def create_line(x1: float, y1: float, x2: float, y2: float) -> ToolResult:
-    """创建直线段。"""
+def create_line(document_path: str, x1: float, y1: float, x2: float, y2: float) -> ToolResult:
+    """创建直线段。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _create():
@@ -120,14 +130,17 @@ def create_line(x1: float, y1: float, x2: float, y2: float) -> ToolResult:
         shape.Name = f"line_{shape.StaticID}"
         return {"shape_id": _static_id(shape), **_shape_info(shape), "x1": x1, "y1": y1, "x2": x2, "y2": y2}
 
-    result = conn.safe_call(_create)
+    result = call_on_active(conn, document_path, _create)
     if result["success"]:
         return ToolResult.ok("直线创建成功", **result["result"])
     return ToolResult.fail(result.get("error", "创建直线失败"))
 
 
-def import_svg(path: str, x: float = 0, y: float = 0) -> ToolResult:
-    """导入 SVG 文件到当前文档。返回导入的形状信息。"""
+def import_svg(document_path: str, path: str, x: float = 0, y: float = 0) -> ToolResult:
+    """导入 SVG 文件到当前文档。返回导入的形状信息。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _import():
@@ -147,14 +160,17 @@ def import_svg(path: str, x: float = 0, y: float = 0) -> ToolResult:
                 pass
         return {"path": path, "status": "imported"}
 
-    result = conn.safe_call(_import)
+    result = call_on_active(conn, document_path, _import)
     if result["success"]:
         return ToolResult.ok(f"SVG 已导入: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导入 SVG 失败"))
 
 
-def import_image(path: str, x: float = 0, y: float = 0, width: float = 0, height: float = 0) -> ToolResult:
-    """导入位图到当前文档。可指定位置和尺寸。"""
+def import_image(document_path: str, path: str, x: float = 0, y: float = 0, width: float = 0, height: float = 0) -> ToolResult:
+    """导入位图到当前文档。可指定位置和尺寸。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _import():
@@ -176,14 +192,17 @@ def import_image(path: str, x: float = 0, y: float = 0, width: float = 0, height
             pass
         return {"path": path, "status": "imported"}
 
-    result = conn.safe_call(_import)
+    result = call_on_active(conn, document_path, _import)
     if result["success"]:
         return ToolResult.ok(f"图片已导入: {path}", **result["result"])
     return ToolResult.fail(result.get("error", "导入图片失败"))
 
 
-def set_shape_size(shape_id: str, width: float, height: float) -> ToolResult:
-    """设置形状的精确尺寸（mm）。"""
+def set_shape_size(document_path: str, shape_id: str, width: float, height: float) -> ToolResult:
+    """设置形状的精确尺寸（document_unit）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _set():
@@ -193,14 +212,17 @@ def set_shape_size(shape_id: str, width: float, height: float) -> ToolResult:
         shape.SetSize(width, height)
         return {"shape_id": shape_id, "width": width, "height": height}
 
-    result = conn.safe_call(_set)
+    result = call_on_active(conn, document_path, _set)
     if result["success"]:
-        return ToolResult.ok(f"形状尺寸已设为: {width}×{height} mm", **result["result"])
+        return ToolResult.ok(f"形状尺寸已设为: {width}×{height}", **result["result"])
     return ToolResult.fail(result.get("error", "设置尺寸失败"))
 
 
-def set_shape_position(shape_id: str, x: float, y: float) -> ToolResult:
-    """设置形状的位置（mm）。"""
+def set_shape_position(document_path: str, shape_id: str, x: float, y: float) -> ToolResult:
+    """设置形状的位置（document_unit）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _set():
@@ -210,7 +232,7 @@ def set_shape_position(shape_id: str, x: float, y: float) -> ToolResult:
         shape.SetPosition(x, y)
         return {"shape_id": shape_id, "x": x, "y": y}
 
-    result = conn.safe_call(_set)
+    result = call_on_active(conn, document_path, _set)
     if result["success"]:
         return ToolResult.ok(f"形状移至: ({x}, {y})", **result["result"])
     return ToolResult.fail(result.get("error", "设置位置失败"))
@@ -219,8 +241,11 @@ def set_shape_position(shape_id: str, x: float, y: float) -> ToolResult:
 _BOOLEAN_OPS = {"union": "Weld", "intersect": "Intersect", "subtract": "Trim", "exclude": "Simplify"}
 
 
-def boolean_operation(shape_ids: str, operation: str) -> ToolResult:
-    """对指定形状执行布尔运算。shape_ids 为逗号分隔的 ID 列表，operation 支持 union/intersect/subtract/exclude。"""
+def boolean_operation(document_path: str, shape_ids: str, operation: str) -> ToolResult:
+    """对指定形状执行布尔运算。shape_ids 为逗号分隔的 ID 列表，operation 支持 union/intersect/subtract/exclude。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     if operation not in _BOOLEAN_OPS:
@@ -242,14 +267,17 @@ def boolean_operation(shape_ids: str, operation: str) -> ToolResult:
         method()
         return {"operation": operation, "input_ids": ids, "result": "success"}
 
-    result = conn.safe_call(_operate)
+    result = call_on_active(conn, document_path, _operate)
     if result["success"]:
         return ToolResult.ok(f"布尔运算完成: {operation}", **result["result"])
     return ToolResult.fail(result.get("error", "布尔运算失败"))
 
 
-def convert_to_curves(shape_id: str) -> ToolResult:
-    """将形状转换为曲线（印前必须操作）。"""
+def convert_to_curves(document_path: str, shape_id: str) -> ToolResult:
+    """将形状转换为曲线（印前必须操作）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _convert():
@@ -259,14 +287,17 @@ def convert_to_curves(shape_id: str) -> ToolResult:
         shape.ConvertToCurves()
         return {"shape_id": shape_id, "converted": True}
 
-    result = conn.safe_call(_convert)
+    result = call_on_active(conn, document_path, _convert)
     if result["success"]:
         return ToolResult.ok(f"已转曲: {shape_id}", **result["result"])
     return ToolResult.fail(result.get("error", "转曲失败"))
 
 
-def group_shapes(shape_ids: str) -> ToolResult:
-    """将多个形状组合为一个群组。shape_ids 为逗号分隔的 ID 列表。"""
+def group_shapes(document_path: str, shape_ids: str) -> ToolResult:
+    """将多个形状组合为一个群组。shape_ids 为逗号分隔的 ID 列表。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _group():
@@ -283,14 +314,17 @@ def group_shapes(shape_ids: str) -> ToolResult:
         group = _create_shape_range(selected).Group()
         return {"group_id": _static_id(group), "member_count": len(ids), "member_ids": ids}
 
-    result = conn.safe_call(_group)
+    result = call_on_active(conn, document_path, _group)
     if result["success"]:
         return ToolResult.ok(f"已组合 {result['result']['member_count']} 个形状", **result["result"])
     return ToolResult.fail(result.get("error", "组合失败"))
 
 
-def find_shape_by_name(name: str) -> ToolResult:
-    """按名称查找形状。返回形状的 ID、类型、尺寸等。"""
+def find_shape_by_name(name: str, document_path: str = "") -> ToolResult:
+    """按名称查找形状。返回形状的 ID、类型、尺寸等。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _find():
@@ -299,7 +333,7 @@ def find_shape_by_name(name: str) -> ToolResult:
             return {"found": False, "name": name}
         return {"found": True, **_shape_info(shape), "shape_id": _static_id(shape)}
 
-    result = conn.safe_call(_find)
+    result = call_on_active(conn, document_path, _find, read_only=True)
     if result["success"]:
         if result["result"]["found"]:
             return ToolResult.ok(f"找到形状: {name}", **result["result"])
@@ -311,7 +345,6 @@ def find_shape_by_name(name: str) -> ToolResult:
 
 _ALIGN_DIRECTIONS = {"left", "center", "right", "top", "middle", "bottom"}
 _Z_ORDER_ACTIONS = {"front", "back", "forward", "backward"}
-_CDR_MILLIMETER = 3
 
 
 def _get_shape_bounds(shape):
@@ -331,19 +364,21 @@ def _get_shape_bounds(shape):
 
 
 def _get_page_size(doc):
-    """获取当前页面的宽度和高度（mm）。"""
+    """Active page width and height in the document unit (the unit of shape positions)."""
     try:
-        doc.Unit = _CDR_MILLIMETER
         page = doc.ActivePage
         return page.SizeWidth, page.SizeHeight
     except Exception:
         return 0, 0
 
 
-def align_shapes(shape_ids: str, alignment: str, reference: str = "selection") -> ToolResult:
+def align_shapes(document_path: str, shape_ids: str, alignment: str, reference: str = "selection") -> ToolResult:
     """将多个形状对齐。alignment: left/center/right/top/middle/bottom。
     reference='selection' 在形状间对齐，reference='page' 对齐到页面边缘。
-    shape_ids 为逗号分隔的形状 ID 或名称列表。"""
+    shape_ids 为逗号分隔的形状 ID 或名称列表。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     alignment = alignment.lower()
@@ -407,15 +442,18 @@ def align_shapes(shape_ids: str, alignment: str, reference: str = "selection") -
 
         return {"shape_count": len(shapes), "alignment": alignment, "reference": reference}
 
-    result = conn.safe_call(_align)
+    result = call_on_active(conn, document_path, _align)
     if result["success"]:
         return ToolResult.ok(f"对齐完成: {alignment} ({reference})", **result["result"])
     return ToolResult.fail(result.get("error", "对齐失败"))
 
 
-def distribute_shapes(shape_ids: str, direction: str = "horizontal", spacing: float = 0) -> ToolResult:
+def distribute_shapes(document_path: str, shape_ids: str, direction: str = "horizontal", spacing: float = 0) -> ToolResult:
     """将多个形状等距分布。direction: horizontal/vertical。spacing>0 时使用固定间距，
-    否则在最小和最大边界之间均匀分布。shape_ids 为逗号分隔。"""
+    否则在最小和最大边界之间均匀分布。shape_ids 为逗号分隔。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     direction = direction.lower()
@@ -482,14 +520,17 @@ def distribute_shapes(shape_ids: str, direction: str = "horizontal", spacing: fl
 
         return {"shape_count": len(shapes), "direction": direction, "spacing": spacing}
 
-    result = conn.safe_call(_distribute)
+    result = call_on_active(conn, document_path, _distribute)
     if result["success"]:
         return ToolResult.ok(f"分布完成: {direction} ({result['result']['shape_count']}个形状)", **result["result"])
     return ToolResult.fail(result.get("error", "分布失败"))
 
 
-def set_z_order(shape_id: str, action: str) -> ToolResult:
-    """控制形状的层级顺序。action: front(置顶)/back(置底)/forward(上移一层)/backward(下移一层)。"""
+def set_z_order(document_path: str, shape_id: str, action: str) -> ToolResult:
+    """控制形状的层级顺序。action: front(置顶)/back(置底)/forward(上移一层)/backward(下移一层)。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     action = action.lower()
@@ -510,15 +551,18 @@ def set_z_order(shape_id: str, action: str) -> ToolResult:
             shape.OrderBackOne()
         return {"shape_id": shape_id, "action": action}
 
-    result = conn.safe_call(_order)
+    result = call_on_active(conn, document_path, _order)
     if result["success"]:
         action_names = {"front": "置顶", "back": "置底", "forward": "上移一层", "backward": "下移一层"}
         return ToolResult.ok(f"层级调整: {shape_id} → {action_names.get(action, action)}", **result["result"])
     return ToolResult.fail(result.get("error", "层级操作失败"))
 
 
-def delete_shape(shape_id: str) -> ToolResult:
-    """删除指定的形状。"""
+def delete_shape(document_path: str, shape_id: str) -> ToolResult:
+    """删除指定的形状。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _delete():
@@ -529,14 +573,17 @@ def delete_shape(shape_id: str) -> ToolResult:
         shape.Delete()
         return {"shape_id": shape_id, "name": name, "deleted": True}
 
-    result = conn.safe_call(_delete)
+    result = call_on_active(conn, document_path, _delete)
     if result["success"]:
         return ToolResult.ok(f"已删除: {result['result']['name']}", **result["result"])
     return ToolResult.fail(result.get("error", "删除形状失败"))
 
 
-def rotate_shape(shape_id: str, angle: float, center_x: float = 0, center_y: float = 0) -> ToolResult:
-    """旋转形状。angle 为旋转角度（度，正值逆时针），center_x/center_y 为旋转中心（0=形状自身中心）。"""
+def rotate_shape(document_path: str, shape_id: str, angle: float, center_x: float = 0, center_y: float = 0) -> ToolResult:
+    """旋转形状。angle 为旋转角度（度，正值逆时针），center_x/center_y 为旋转中心（0=形状自身中心）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _rotate():
@@ -558,14 +605,17 @@ def rotate_shape(shape_id: str, angle: float, center_x: float = 0, center_y: flo
         shape.RotationAngle = angle
         return {"shape_id": shape_id, "angle": angle, "old_angle": round(old_angle, 2)}
 
-    result = conn.safe_call(_rotate)
+    result = call_on_active(conn, document_path, _rotate)
     if result["success"]:
         return ToolResult.ok(f"形状已旋转: {shape_id} → {angle}°", **result["result"])
     return ToolResult.fail(result.get("error", "旋转失败"))
 
 
-def ungroup_shapes(shape_id: str, recursive: bool = False) -> ToolResult:
-    """取消群组。shape_id 为群组形状的 ID；recursive=True 时递归取消全部子群组。"""
+def ungroup_shapes(document_path: str, shape_id: str, recursive: bool = False) -> ToolResult:
+    """取消群组。shape_id 为群组形状的 ID；recursive=True 时递归取消全部子群组。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _ungroup():
@@ -596,17 +646,20 @@ def ungroup_shapes(shape_id: str, recursive: bool = False) -> ToolResult:
             shape.Ungroup()
         return {"shape_id": shape_id, "recursive": recursive, "ungrouped": True}
 
-    result = conn.safe_call(_ungroup)
+    result = call_on_active(conn, document_path, _ungroup)
     if result["success"]:
         detail = "递归取消群组" if recursive else "取消群组"
         return ToolResult.ok(f"{detail}: {shape_id}", **result["result"])
     return ToolResult.fail(result.get("error", "取消群组失败"))
 
 
-def scale_shape(shape_id: str, scale_x: float, scale_y: float = 0, keep_proportion: bool = False) -> ToolResult:
+def scale_shape(document_path: str, shape_id: str, scale_x: float, scale_y: float = 0, keep_proportion: bool = False) -> ToolResult:
     """等比/非等比缩放形状。scale_x 为 X 方向缩放因子（1.0=原尺寸，2.0=放大一倍）。
     scale_y 为 Y 方向缩放因子，为 0 时与 scale_x 相同（等比）。
-    keep_proportion=True 时忽略 scale_y 强制等比缩放。"""
+    keep_proportion=True 时忽略 scale_y 强制等比缩放。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     if scale_x <= 0:
@@ -635,7 +688,7 @@ def scale_shape(shape_id: str, scale_x: float, scale_y: float = 0, keep_proporti
             "new_size": {"width": round(new_w, 2), "height": round(new_h, 2)},
         }
 
-    result = conn.safe_call(_scale)
+    result = call_on_active(conn, document_path, _scale)
     if result["success"]:
         r = result["result"]
         return ToolResult.ok(
@@ -649,13 +702,16 @@ def scale_shape(shape_id: str, scale_x: float, scale_y: float = 0, keep_proporti
 # ========== P1 增强工具 ==========
 
 
-def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = "") -> ToolResult:
+def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = "", document_path: str = "") -> ToolResult:
     """按条件选择形状并返回匹配的形状列表。
     by_type: rectangle/ellipse/curve/text/bitmap/group 等
     by_layer: 图层名称
     by_name_pattern: 名称包含此字符串的形状
 
-    不修改 CorelDRAW 中的实际选中状态，只返回匹配列表供其他工具使用。"""
+    不修改 CorelDRAW 中的实际选中状态，只返回匹配列表供其他工具使用。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     _TYPE_MAP = {
@@ -715,7 +771,7 @@ def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = 
             "by_type": by_type, "by_layer": by_layer, "by_name_pattern": by_name_pattern,
         }}
 
-    result = conn.safe_call(_select)
+    result = call_on_active(conn, document_path, _select, read_only=True)
     if result["success"]:
         r = result["result"]
         criteria_parts = []
@@ -729,9 +785,12 @@ def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = 
     return ToolResult.fail(result.get("error", "选择形状失败"))
 
 
-def powerclip(content_shape_id: str, container_shape_id: str) -> ToolResult:
+def powerclip(document_path: str, content_shape_id: str, container_shape_id: str) -> ToolResult:
     """将 content 形状放入 container 形状内（PowerClip）。
-    类似于 AI 的剪切蒙版，用于将图案/文字限制在特定区域内。"""
+    类似于 AI 的剪切蒙版，用于将图案/文字限制在特定区域内。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _clip():
@@ -766,7 +825,7 @@ def powerclip(content_shape_id: str, container_shape_id: str) -> ToolResult:
             "powerclip_created": True,
         }
 
-    result = conn.safe_call(_clip)
+    result = call_on_active(conn, document_path, _clip)
     if result["success"]:
         return ToolResult.ok(
             f"PowerClip: {content_shape_id} → {container_shape_id}",

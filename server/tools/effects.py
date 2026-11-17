@@ -5,7 +5,8 @@ from typing import Literal
 
 from core.drawing import CDR_GROUP_SHAPE
 from core.models import ToolResult
-from tools.document import _UNIT_MAP, _scoped_page
+from core.targets import resolve_page
+from core.units import unit_code, unit_name
 from tools.inspection import _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shape
 from tools.shapes import _static_id
 
@@ -22,7 +23,7 @@ def _overprint_flags(shape):
 
 
 def get_shape_overprint(document_path: str, page_index: int, shape_id: str) -> ToolResult:
-    """Read separate fill and outline overprint flags on one exact shape in a saved active document."""
+    """Read separate fill and outline overprint flags on one exact shape in an exact open document."""
     return _on_shape(document_path, page_index, shape_id, lambda app, doc, shape: _overprint_flags(shape))
 
 
@@ -56,7 +57,7 @@ def _contour_details(effect, unit):
     return {
         "direction": _DIRECTION_NAMES.get(contour.Direction, "unknown"),
         "offset": contour.Offset,
-        "document_unit": unit,
+        "document_unit": unit_name(unit),
         "steps": contour.Steps,
         "fill_color": _color_details(contour.FillColor),
     }
@@ -72,7 +73,7 @@ def inspect_contours(document_path: str, page_index: int, shape_id: str) -> Tool
 
 def apply_contour(
     document_path: str, page_index: int, shape_id: str,
-    direction: Literal["inside", "outside"], offset: float, unit: Literal["mm", "cm", "inch", "pt"], steps: int,
+    direction: Literal["inside", "outside"], offset: float, unit: Literal["mm", "cm", "in", "inch", "pt"], steps: int,
     fill_from_shape_id: str | None = None,
 ) -> ToolResult:
     """Apply an explicit contour to an exact source with no existing contour and read back the effect.
@@ -80,8 +81,8 @@ def apply_contour(
     Optionally use the uniform fill of another exact shape on the page as the contour color.
     Otherwise CorelDRAW supplies the default color. Check the returned fill before using it in a separation.
     """
-    if direction not in ("inside", "outside") or unit not in ("mm", "cm", "inch", "pt"):
-        return ToolResult.fail("Specify inside/outside and one of mm, cm, inch, or pt")
+    if direction not in ("inside", "outside") or unit not in ("mm", "cm", "in", "inch", "pt"):
+        return ToolResult.fail("Specify inside/outside and one of mm, cm, in, or pt")
     if not math.isfinite(offset) or offset <= 0 or steps < 1:
         return ToolResult.fail("offset must be finite and positive, and steps must be at least one")
 
@@ -90,11 +91,11 @@ def apply_contour(
             raise ValueError("The source already has a contour. Inspect it before proceeding.")
         fill_color = None
         if fill_from_shape_id is not None:
-            donor, = _exact_shapes(_scoped_page(doc, page_index), [fill_from_shape_id])
+            donor, = _exact_shapes(resolve_page(doc, page_index), [fill_from_shape_id])
             if donor.Fill.Type != _CDR_UNIFORM_FILL:
                 raise ValueError("The fill donor must have a uniform fill")
             fill_color = donor.Fill.UniformColor
-        document_offset = app.ConvertUnits(offset, _UNIT_MAP[unit], doc.Unit)
+        document_offset = app.ConvertUnits(offset, unit_code(unit), doc.Unit)
         # CorelDRAW can round effect distances to its internal measurement resolution.
         tolerance = app.ConvertUnits(1, _CDR_TENTH_MICRON, doc.Unit)
         if document_offset < tolerance:

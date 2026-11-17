@@ -3,6 +3,7 @@
 from core.connection import get_connection
 from core.drawing import CDR_COLOR_RGB, CDR_GROUP_SHAPE
 from core.models import ToolResult
+from core.targets import call_on_active
 from tools.inspection import _CDR_NO_FILL, _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shapes
 
 _CDR_TEXT_SHAPE = 6
@@ -87,8 +88,11 @@ def _find_shape(shape_id: str):
         return None
 
 
-def set_fill_cmyk(c: float, m: float, y: float, k: float, shape_id: str = "") -> ToolResult:
-    """设置形状的 CMYK 填充色。shape_id 为空时作用于选中形状。"""
+def set_fill_cmyk(document_path: str, c: float, m: float, y: float, k: float, shape_id: str = "") -> ToolResult:
+    """设置形状的 CMYK 填充色。shape_id 为空时作用于选中形状。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _fill():
@@ -108,14 +112,17 @@ def set_fill_cmyk(c: float, m: float, y: float, k: float, shape_id: str = "") ->
                     pass
         return {"shape_id": shape_id or "selection", "cmyk": [c, m, y, k]}
 
-    result = conn.safe_call(_fill)
+    result = call_on_active(conn, document_path, _fill)
     if result["success"]:
         return ToolResult.ok(f"CMYK 填充: C{c} M{m} Y{y} K{k}", **result["result"])
     return ToolResult.fail(result.get("error", "设置 CMYK 填充失败"))
 
 
-def set_fill_rgb(r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
-    """设置形状的 RGB 填充色。"""
+def set_fill_rgb(document_path: str, r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
+    """设置形状的 RGB 填充色。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _fill():
@@ -135,14 +142,17 @@ def set_fill_rgb(r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
                     pass
         return {"shape_id": shape_id or "selection", "rgb": [r, g, b]}
 
-    result = conn.safe_call(_fill)
+    result = call_on_active(conn, document_path, _fill)
     if result["success"]:
         return ToolResult.ok(f"RGB 填充: ({r}, {g}, {b})", **result["result"])
     return ToolResult.fail(result.get("error", "设置 RGB 填充失败"))
 
 
-def set_fill_pantone(shape_id: str, pantone_code: str) -> ToolResult:
-    """设置形状的 Pantone 专色填充。pantone_code 如 '485 C'。"""
+def set_fill_pantone(document_path: str, shape_id: str, pantone_code: str) -> ToolResult:
+    """设置形状的 Pantone 专色填充。pantone_code 如 '485 C'。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _fill():
@@ -164,14 +174,17 @@ def set_fill_pantone(shape_id: str, pantone_code: str) -> ToolResult:
                 raise RuntimeError(f"无法应用 Pantone 色: {pantone_code}")
         return {"shape_id": shape_id, "pantone": pantone_code}
 
-    result = conn.safe_call(_fill)
+    result = call_on_active(conn, document_path, _fill)
     if result["success"]:
         return ToolResult.ok(f"Pantone 填充: {pantone_code}", **result["result"])
     return ToolResult.fail(result.get("error", "设置 Pantone 填充失败"))
 
 
-def set_outline(shape_id: str, width: float, color: str = "", color_mode: str = "CMYK") -> ToolResult:
-    """设置形状的描边宽度和颜色。color 格式: CMYK 如 '0,100,100,0'，RGB 如 '255,0,0'。"""
+def set_outline(document_path: str, shape_id: str, width: float, color: str = "", color_mode: str = "CMYK") -> ToolResult:
+    """设置形状的描边宽度和颜色。color 格式: CMYK 如 '0,100,100,0'，RGB 如 '255,0,0'。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _outline():
@@ -189,14 +202,17 @@ def set_outline(shape_id: str, width: float, color: str = "", color_mode: str = 
                 shape.Outline.Color.RGBAssign(r, g, b)
         return {"shape_id": shape_id, "width": width, "color": color, "color_mode": color_mode}
 
-    result = conn.safe_call(_outline)
+    result = call_on_active(conn, document_path, _outline)
     if result["success"]:
         return ToolResult.ok(f"描边: {width}mm, color={color or '保持原色'}", **result["result"])
     return ToolResult.fail(result.get("error", "设置描边失败"))
 
 
-def set_no_fill(shape_id: str = "") -> ToolResult:
-    """移除形状的填充（设为镂空）。"""
+def set_no_fill(document_path: str, shape_id: str = "") -> ToolResult:
+    """移除形状的填充（设为镂空）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _no_fill():
@@ -216,14 +232,17 @@ def set_no_fill(shape_id: str = "") -> ToolResult:
                     pass
         return {"shape_id": shape_id or "selection"}
 
-    result = conn.safe_call(_no_fill)
+    result = call_on_active(conn, document_path, _no_fill)
     if result["success"]:
         return ToolResult.ok("已移除填充", **result["result"])
     return ToolResult.fail(result.get("error", "移除填充失败"))
 
 
-def set_no_outline(shape_id: str = "") -> ToolResult:
-    """移除形状的描边。"""
+def set_no_outline(document_path: str, shape_id: str = "") -> ToolResult:
+    """移除形状的描边。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _no_outline():
@@ -243,14 +262,17 @@ def set_no_outline(shape_id: str = "") -> ToolResult:
                     pass
         return {"shape_id": shape_id or "selection"}
 
-    result = conn.safe_call(_no_outline)
+    result = call_on_active(conn, document_path, _no_outline)
     if result["success"]:
         return ToolResult.ok("已移除描边", **result["result"])
     return ToolResult.fail(result.get("error", "移除描边失败"))
 
 
-def check_rgb_colors() -> ToolResult:
-    """检测文档中的 RGB 颜色（印前检查用，印刷需转 CMYK）。"""
+def check_rgb_colors(document_path: str = "") -> ToolResult:
+    """检测文档中的 RGB 颜色（印前检查用，印刷需转 CMYK）。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _check():
@@ -291,7 +313,7 @@ def check_rgb_colors() -> ToolResult:
             pass
         return {"found": len(rgb_items), "items": rgb_items, "passed": len(rgb_items) == 0}
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
         if r["passed"]:
@@ -301,13 +323,17 @@ def check_rgb_colors() -> ToolResult:
 
 
 def set_fountain_fill(
+    document_path: str,
     shape_id: str,
     fill_type: str,
     c1: float, m1: float, y1: float, k1: float,
     c2: float, m2: float, y2: float, k2: float,
     angle: float = 45.0
 ) -> ToolResult:
-    """设置形状的渐变填充。fill_type: linear/radial/conical/square，颜色为 CMYK。"""
+    """设置形状的渐变填充。fill_type: linear/radial/conical/square，颜色为 CMYK。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _fill():
@@ -330,14 +356,17 @@ def set_fountain_fill(
             "angle": angle
         }
 
-    result = conn.safe_call(_fill)
+    result = call_on_active(conn, document_path, _fill)
     if result["success"]:
         return ToolResult.ok(f"渐变填充: {fill_type}, C{c1}M{y1}Y{y1}K{k1} → C{c2}M{m2}Y{y2}K{k2}", **result["result"])
     return ToolResult.fail(result.get("error", "设置渐变填充失败"))
 
 
-def set_transparency(shape_id: str, opacity: float) -> ToolResult:
-    """设置形状的透明度。opacity: 0-100，0 为完全透明，100 为不透明。"""
+def set_transparency(document_path: str, shape_id: str, opacity: float) -> ToolResult:
+    """设置形状的透明度。opacity: 0-100，0 为完全透明，100 为不透明。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _transparency():
@@ -350,7 +379,7 @@ def set_transparency(shape_id: str, opacity: float) -> ToolResult:
         shape.Transparency.ApplyUniformTransparency(transparency)
         return {"shape_id": shape_id, "opacity": opacity}
 
-    result = conn.safe_call(_transparency)
+    result = call_on_active(conn, document_path, _transparency)
     if result["success"]:
         return ToolResult.ok(f"透明度: {opacity}%", **result["result"])
     return ToolResult.fail(result.get("error", "设置透明度失败"))

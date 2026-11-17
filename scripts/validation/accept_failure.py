@@ -1,7 +1,8 @@
-"""In-process failure-path checks: layer proof restores state when publishing fails; weld rolls back a partial weld."""
+"""In-process failure-path checks: layer proof restore, partial-weld rollback, and why edits activate their document (Undo)."""
 import json, sys
 sys.path.insert(0, ".")
 from core.connection import get_connection
+from core.targets import activate_document, find_documents
 from tools import geometry, proof
 conn = get_connection()
 FX = sys.argv[1].replace("/", "\\") + r"\fx"
@@ -9,9 +10,16 @@ DOC = FX + r"\accept.cdr"
 IDS = json.loads(sys.argv[2])
 
 
+def fixture():
+    """accept.cdr by exact path, made active (CorelDRAW applies Undo to the active document)."""
+    doc, = find_documents(conn.app, DOC)
+    activate_document(conn.app, doc)
+    return doc
+
+
 def state():
     def run():
-        doc = conn.app.ActiveDocument
+        doc = fixture()
         s = doc.PDFSettings
         return {"pdf": {n: getattr(s, n) for n in ("PublishRange", "PageRange", "ColorMode", "Overprints")},
                 "dirty": doc.Dirty, "page": doc.ActivePage.Index, "unit": doc.Unit,
@@ -40,7 +48,7 @@ print("PASS" if state() == s0 else "FAIL", "layer flags, dirty flag, PDF setting
 
 # The weld rollback depends on detecting a partial weld and on Undo(1) restoring the sources.
 def partial():
-    doc = conn.app.ActiveDocument
+    doc = fixture()
     layer = [l for l in doc.Pages(1).Layers if l.Name == "Weld"][0]
     find = lambda i: [x for x in layer.Shapes if str(x.StaticID) == IDS[i]][0]  # noqa: E731
     c1, c2, c3 = find("c1"), find("c2"), find("c3")
@@ -57,3 +65,33 @@ def partial():
 r = conn.safe_call(partial); print(r); r = r["result"]
 ok = r["after_partial"] == [IDS["c3"]] and r["after_undo"] == sorted([IDS["c1"], IDS["c2"], IDS["c3"]])
 print("PASS" if ok else "FAIL", "rollback primitive: _surviving detects a partial weld and Undo(1) restores sources", r)
+
+
+# Edits activate their document because CorelDRAW applies Document.Undo to the active document.
+def undo_follows_active():
+    import shutil
+    paths = [FX + r"\e08_undo_x.cdr", FX + r"\e08_undo_y.cdr"]
+    for path in paths:
+        shutil.copyfile(r"C:\CorelMcpLab\templates\colors.cdr", path)
+    app = conn.app
+    x, y = (app.OpenDocument(path) for path in paths)  # y is active
+    try:
+        layers = [[layer for layer in d.Pages(1).Layers if not layer.IsSpecialLayer][0] for d in (x, y)]
+        counts = [layer.Shapes.Count for layer in layers]
+        layers[0].CreateRectangle2(0, 0, 1, 1)  # x is inactive
+        layers[1].CreateRectangle2(0, 0, 1, 1)
+        x.Undo(1)  # called on x while y is active
+        hazard = [layer.Shapes.Count - n for layer, n in zip(layers, counts)]
+        activate_document(app, x)
+        x.Undo(1)
+        fixed = [layer.Shapes.Count - n for layer, n in zip(layers, counts)]
+        return {"undo_on_inactive_x": hazard, "after_activating_x": fixed}
+    finally:
+        for d in (x, y):
+            d.Dirty = False
+            d.Close()
+
+
+r = conn.safe_call(undo_follows_active)["result"]
+print("PASS" if r == {"undo_on_inactive_x": [1, 0], "after_activating_x": [0, 0]} else "FAIL",
+      "Document.Undo on an inactive document undoes the active one; activate_document makes it safe", r)

@@ -32,11 +32,8 @@ from core.models import ToolResult
 from tools.document import (
     create_document,
     close_document,
-    get_document_info,
-    set_page_size,
+    edit_pages,
     add_guideline,
-    switch_page,
-    delete_page,
 )
 from tools.text import (
     create_text_frame,
@@ -68,6 +65,15 @@ from tools.colors import (
     set_transparency,
 )
 from tools.layers import create_layer, assign_to_layer, get_layers
+
+
+class _Doc:
+    """The test document's identity (an unsaved document is addressed by its title)."""
+
+    path = ""
+
+
+DOC = _Doc()
 
 
 class TestResult:
@@ -123,6 +129,8 @@ def test_step2_create_document(tr: TestResult, output_dir: str):
     """步骤2：创建测试文档"""
     print("\n[步骤2] 创建测试文档 (200×80mm)…")
     result = create_document(200, 80, "mm")
+    if result.success:
+        DOC.path = result.data["document_path"]
     tr.step("创建文档 200×80mm", result)
     return result.success
 
@@ -131,10 +139,10 @@ def test_step3_create_placeholders(tr: TestResult):
     """步骤3：创建占位符文字"""
     print("\n[步骤3] 创建占位符文字…")
 
-    result1 = create_text_frame(20, 25, 160, 30, "房间号")
+    result1 = create_text_frame(DOC.path, 20, 25, 160, 30, "房间号")
     tr.step("创建 placeholder_room (x:20 y:25 w:160 h:30)", result1)
 
-    result2 = create_text_frame(20, 45, 160, 20, "部门名称")
+    result2 = create_text_frame(DOC.path, 20, 45, 160, 20, "部门名称")
     tr.step("创建 placeholder_dept (x:20 y:45 w:160 h:20)", result2)
 
 
@@ -173,10 +181,10 @@ def test_step4_replace_text(tr: TestResult):
     if "placeholder_dept" in renamed:
         tr.step("重命名形状 → placeholder_dept", ToolResult.ok("OK"))
 
-    result1 = set_text_content("placeholder_room", "301")
+    result1 = set_text_content(DOC.path, "placeholder_room", "301")
     tr.step("替换 placeholder_room → '301'", result1)
 
-    result2 = set_text_content("placeholder_dept", "研发中心")
+    result2 = set_text_content(DOC.path, "placeholder_dept", "研发中心")
     tr.step("替换 placeholder_dept → '研发中心'", result2)
 
 
@@ -201,10 +209,10 @@ def test_step6_preflight(tr: TestResult):
     result2 = check_rgb_colors()
     tr.step("RGB 颜色检查", result2)
 
-    result3 = convert_text_to_curves("placeholder_room")
+    result3 = convert_text_to_curves(DOC.path, "placeholder_room")
     tr.step("placeholder_room 转曲", result3)
 
-    result4 = convert_text_to_curves("placeholder_dept")
+    result4 = convert_text_to_curves(DOC.path, "placeholder_dept")
     tr.step("placeholder_dept 转曲", result4)
 
 
@@ -212,16 +220,16 @@ def test_step7_layers(tr: TestResult):
     """步骤7：图层管理"""
     print("\n[步骤7] 图层管理…")
 
-    result1 = create_layer("laser_red")
+    result1 = create_layer(DOC.path, "laser_red")
     tr.step("创建图层 laser_red", result1)
 
-    result2 = create_layer("laser_white")
+    result2 = create_layer(DOC.path, "laser_white")
     tr.step("创建图层 laser_white", result2)
 
     result3 = get_layers()
     tr.step(f"获取图层列表", result3)
 
-    result4 = assign_to_layer("placeholder_room", "laser_white")
+    result4 = assign_to_layer(DOC.path, "placeholder_room", "laser_white")
     tr.step(f"placeholder_room → laser_white", result4)
 
 
@@ -236,24 +244,24 @@ def test_step8_export(tr: TestResult, output_dir: str):
     jpg_path = os.path.join(output_dir, "test_output.jpg")
     pdfx_path = os.path.join(output_dir, "test_output_pdfx.pdf")
 
-    result1 = export_preview_png(preview_path, 400)
+    result1 = export_preview_png(DOC.path, preview_path, 400)
     tr.step(f"导出预览 PNG: {preview_path}", result1)
 
-    result2 = export_pdf(pdf_path, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
+    result2 = export_pdf(DOC.path, pdf_path, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
     tr.step(f"导出印刷 PDF: {pdf_path}", result2)
 
-    result3 = export_dxf(dxf_path, version="R14")
+    result3 = export_dxf(DOC.path, dxf_path, version="R14")
     tr.step(f"导出激光 DXF: {dxf_path}", result3)
 
-    result4 = export_png(png_path, dpi=300)
+    result4 = export_png(DOC.path, png_path, dpi=300)
     tr.step(f"导出高清 PNG: {png_path}", result4)
 
     # 新增：JPEG 导出
-    result5 = export_jpeg(jpg_path, quality=85, dpi=150)
+    result5 = export_jpeg(DOC.path, jpg_path, quality=85, dpi=150)
     tr.step(f"导出 JPEG: {jpg_path}", result5)
 
     # 新增：PDF/X 导出
-    result6 = export_pdf(pdfx_path, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True, pdfx_version="PDFX4")
+    result6 = export_pdf(DOC.path, pdfx_path, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True, pdfx_version="PDFX4")
     tr.step(f"导出 PDF/X-4: {pdfx_path}", result6)
 
     # 检查文件是否存在
@@ -295,13 +303,13 @@ def test_step9_shapes_p0(tr: TestResult):
     print("\n[步骤9] P0 排版工具…")
 
     # 创建测试矩形
-    r1 = create_rectangle(10, 10, 30, 20, 0)
+    r1 = create_rectangle(DOC.path, 10, 10, 30, 20, 0)
     tr.step("创建 rect_a (10,10 30×20)", r1)
 
-    r2 = create_rectangle(50, 15, 30, 20, 0)
+    r2 = create_rectangle(DOC.path, 50, 15, 30, 20, 0)
     tr.step("创建 rect_b (50,15 30×20)", r2)
 
-    r3 = create_rectangle(100, 5, 30, 20, 0)
+    r3 = create_rectangle(DOC.path, 100, 5, 30, 20, 0)
     tr.step("创建 rect_c (100,5 30×20)", r3)
 
     conn = get_connection()
@@ -331,40 +339,40 @@ def test_step9_shapes_p0(tr: TestResult):
     shape_ids_str = ",".join(new_ids)
 
     # 测试对齐（selection 模式）
-    result = align_shapes(shape_ids_str, "left")
+    result = align_shapes(DOC.path, shape_ids_str, "left")
     tr.step(f"左对齐 (3 shapes)", result)
 
-    result = align_shapes(shape_ids_str, "top", reference="page")
+    result = align_shapes(DOC.path, shape_ids_str, "top", reference="page")
     tr.step(f"顶部对齐到页面", result)
 
     # 测试分布
-    result = distribute_shapes(shape_ids_str, "horizontal")
+    result = distribute_shapes(DOC.path, shape_ids_str, "horizontal")
     tr.step(f"水平等距分布", result)
 
     # 测试一级操作
-    result = set_z_order(new_ids[0], "front")
+    result = set_z_order(DOC.path, new_ids[0], "front")
     tr.step(f"置顶 {new_ids[0][:8]}", result)
 
-    result = set_z_order(new_ids[0], "back")
+    result = set_z_order(DOC.path, new_ids[0], "back")
     tr.step(f"置底 {new_ids[0][:8]}", result)
 
-    result = set_z_order(new_ids[0], "forward")
+    result = set_z_order(DOC.path, new_ids[0], "forward")
     tr.step(f"上移一层 {new_ids[0][:8]}", result)
 
     # 测试旋转
-    result = rotate_shape(new_ids[1], 45)
+    result = rotate_shape(DOC.path, new_ids[1], 45)
     tr.step(f"旋转 45° {new_ids[1][:8]}", result)
 
     # 测试等比缩放
-    result = scale_shape(new_ids[2], 1.5, keep_proportion=True)
+    result = scale_shape(DOC.path, new_ids[2], 1.5, keep_proportion=True)
     tr.step(f"放大 150% {new_ids[2][:8]}", result)
 
     # 测试群组 + 取消群组
-    result = group_shapes(f"{new_ids[0]},{new_ids[1]}")
+    result = group_shapes(DOC.path, f"{new_ids[0]},{new_ids[1]}")
     tr.step(f"群组 rect_a + rect_b", result)
     if result.success:
         group_id = result.data.get("group_id", "")
-        result_ug = ungroup_shapes(group_id)
+        result_ug = ungroup_shapes(DOC.path, group_id)
         tr.step(f"取消群组 {group_id[:8]}", result_ug)
     else:
         tr.skip("群组/取消群组测试", "群组创建失败，跳过取消群组")
@@ -375,7 +383,7 @@ def test_step9_shapes_p0(tr: TestResult):
 
     # 测试删除（删除第三个矩形 rect_c）
     if len(new_ids) >= 3:
-        result = delete_shape(new_ids[2])
+        result = delete_shape(DOC.path, new_ids[2])
         tr.step(f"删除 rect_c {new_ids[2][:8]}", result)
 
     # 验证删除
@@ -394,37 +402,36 @@ def test_step10_advanced_p1(tr: TestResult):
     print("\n[步骤10] P1 增强工具…")
 
     # 测试渐变填充
-    r = create_rectangle(10, 70, 40, 10, 0)
+    r = create_rectangle(DOC.path, 10, 70, 40, 10, 0)
     if r.success:
         rect_id = r.data.get("shape_id", "")
-        result = set_fountain_fill(rect_id, "linear", 0, 100, 100, 0, 100, 0, 0, 0, angle=90)
+        result = set_fountain_fill(DOC.path, rect_id, "linear", 0, 100, 100, 0, 100, 0, 0, 0, angle=90)
         tr.step(f"线性渐变填充 {rect_id[:8]}", result)
     else:
         tr.skip("渐变填充测试", "无法创建测试形状")
 
     # 测试透明度
-    ell = create_ellipse(100, 75, 10, 5)
+    ell = create_ellipse(DOC.path, 100, 75, 10, 5)
     if ell.success:
         ell_id = ell.data.get("shape_id", "")
-        result = set_transparency(ell_id, 50)
+        result = set_transparency(DOC.path, ell_id, 50)
         tr.step(f"50% 透明度 {ell_id[:8]}", result)
         _test_shape_ids.append(ell_id)
     else:
         tr.skip("透明度测试", "无法创建椭圆")
 
     # 测试辅助线
-    result = add_guideline(40, "horizontal")
+    result = add_guideline(DOC.path, 40, "horizontal")
     tr.step("添加水平辅助线 40mm", result)
 
-    result = add_guideline(100, "vertical")
+    result = add_guideline(DOC.path, 100, "vertical")
     tr.step("添加垂直辅助线 100mm", result)
 
     # 测试页面切换（先添加一页）
-    from tools.document import add_page
-    result = add_page()
+    result = edit_pages(DOC.path, "add")
     tr.step("添加第2页", result)
 
-    result = switch_page(1)
+    result = edit_pages(DOC.path, "activate", page_index=1)
     tr.step("切换回第1页", result)
 
     # 印前全局检查
@@ -435,12 +442,12 @@ def test_step10_advanced_p1(tr: TestResult):
     tr.step("色彩报告", result)
 
     # 测试 PowerClip（用两个矩形）
-    clip_container = create_rectangle(60, 80, 30, 15, 5)
-    clip_content = create_rectangle(62, 82, 10, 6, 0)
+    clip_container = create_rectangle(DOC.path, 60, 80, 30, 15, 5)
+    clip_content = create_rectangle(DOC.path, 62, 82, 10, 6, 0)
     if clip_container.success and clip_content.success:
         cont_id = clip_container.data.get("shape_id", "")
         cnt_id = clip_content.data.get("shape_id", "")
-        result = powerclip(cnt_id, cont_id)
+        result = powerclip(DOC.path, cnt_id, cont_id)
         tr.step(f"PowerClip: {cnt_id[:8]} → {cont_id[:8]}", result)
     else:
         tr.skip("PowerClip 测试", "无法创建测试形状")
@@ -454,10 +461,10 @@ def test_step11_cleanup(tr: TestResult, output_dir: str):
     print("\n[步骤11] 清理…")
 
     # 删除第2页（测试页）
-    result = delete_page(2)
+    result = edit_pages(DOC.path, "delete", page_index=2)
     tr.step("删除测试页 (page 2)", result)
 
-    result = close_document()
+    result = close_document(DOC.path, discard_changes=True)
     tr.step("关闭文档", result)
 
     close_connection()

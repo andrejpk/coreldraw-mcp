@@ -53,7 +53,7 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 
 | Module | Tools | Functionality |
 |--------|-------|---------------|
-| `document` | 7 | Open template, create, save, close, page management |
+| `document` | 8 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), text listing, guidelines. Every tool takes an exact `document_path`; units are never changed |
 | `shapes` | 11 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops |
 | `text` | 5 | Text replacement, style, overflow detection, convert to curves |
 | `colors` | 8 | CMYK / RGB / Pantone fill & stroke, RGB compliance check |

@@ -1,11 +1,11 @@
 import sys, json; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-from audit_lib import Session
+from audit_lib import RUN, Session
 from audit_manifest import manifest
-inv = json.load(open(r"C:\CorelMcpLab\runs\e01\inv\53210 - ME-M.json", encoding="utf-8")); doc = inv["doc"]
-t2p = r"C:\CorelMcpLab\runs\e01\inv\53210 - ME-M.t2.json"; t2 = json.load(open(t2p, encoding="utf-8"))
-with Session(r"C:\CorelMcpLab\runs\e01\calls.jsonl") as s:
+inv = json.load(open(RUN + r"\inv\53210 - ME-M.json", encoding="utf-8")); doc = inv["doc"]
+t2p = RUN + r"\inv\53210 - ME-M.t2.json"; t2 = json.load(open(t2p, encoding="utf-8"))
+with Session(RUN + r"\calls.jsonl") as s:
     s.task = "T2 53210 - ME-M retry p2"
-    s.call("open_template", {"path": doc}, note="re-activate after mismatch"); shapes = inv["pages"]["2"]["shapes"]; runs = {}
+    s.call("open_document", {"path": doc}, note="re-activate after mismatch"); shapes = inv["pages"]["2"]["shapes"]; runs = {}
     for sh in shapes:
         if sh.get("type") == 6 and sh["layer"]["printable"]:
             r = s.call("inspect_text_fill_runs", {"document_path": doc, "page_index": 2, "shape_id": sh["shape_id"]})

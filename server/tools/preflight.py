@@ -3,23 +3,26 @@
 from core.connection import get_connection
 from core.drawing import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB, CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.targets import call_on_active
+from core.units import MILLIMETER, convert
 
 _CDR_PARAGRAPH_TEXT = 1
-_CDR_MILLIMETER = 3
 
 
-def check_dimensions(expected_width: float, expected_height: float, tolerance: float = 0.5) -> ToolResult:
-    """校验当前页面尺寸是否在容差范围内。"""
+def check_dimensions(expected_width: float, expected_height: float, tolerance: float = 0.5, document_path: str = "") -> ToolResult:
+    """校验当前页面尺寸是否在容差范围内。
+
+    Reads the active document. Sizes and tolerance in mm.
+    """
     conn = get_connection()
 
     def _check():
         doc = conn.app.ActiveDocument
         if not doc:
             raise RuntimeError("没有打开的文档")
-        doc.Unit = _CDR_MILLIMETER
         page = doc.ActivePage
-        actual_w = page.SizeWidth
-        actual_h = page.SizeHeight
+        actual_w = convert(page.SizeWidth, doc.Unit, MILLIMETER, conn.app)
+        actual_h = convert(page.SizeHeight, doc.Unit, MILLIMETER, conn.app)
         w_diff = abs(actual_w - expected_width)
         h_diff = abs(actual_h - expected_height)
         w_ok = w_diff <= tolerance
@@ -30,9 +33,10 @@ def check_dimensions(expected_width: float, expected_height: float, tolerance: f
             "actual": {"width": round(actual_w, 2), "height": round(actual_h, 2)},
             "diff": {"width": round(w_diff, 2), "height": round(h_diff, 2)},
             "tolerance": tolerance,
+            "unit": "mm",
         }
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         if result["result"]["passed"]:
             return ToolResult.ok("尺寸校验通过", **result["result"])
@@ -40,8 +44,11 @@ def check_dimensions(expected_width: float, expected_height: float, tolerance: f
     return ToolResult.fail(result.get("error", "尺寸校验失败"))
 
 
-def check_text_overflow_all() -> ToolResult:
-    """检查全文档所有文字形状的溢出状态。返回所有溢出的文字列表。"""
+def check_text_overflow_all(document_path: str = "") -> ToolResult:
+    """检查全文档所有文字形状的溢出状态。返回所有溢出的文字列表。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _check():
@@ -87,7 +94,7 @@ def check_text_overflow_all() -> ToolResult:
             "overflow_items": overflow_items,
         }
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
         if r["passed"]:
@@ -96,8 +103,11 @@ def check_text_overflow_all() -> ToolResult:
     return ToolResult.fail(result.get("error", "文字溢出检查失败"))
 
 
-def check_missing_fonts() -> ToolResult:
-    """检查文档是否使用了系统中缺失的字体。"""
+def check_missing_fonts(document_path: str = "") -> ToolResult:
+    """检查文档是否使用了系统中缺失的字体。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _check():
@@ -165,7 +175,7 @@ def check_missing_fonts() -> ToolResult:
         missing_list = sorted(list(missing_fonts))
         return {"passed": len(missing_list) == 0, "missing_fonts": missing_list, "count": len(missing_list)}
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
         if r["passed"]:
@@ -174,8 +184,11 @@ def check_missing_fonts() -> ToolResult:
     return ToolResult.fail(result.get("error", "字体检查失败"))
 
 
-def check_rgb_colors() -> ToolResult:
-    """检查文档中的 RGB 颜色（印前检查 — 印刷需转为 CMYK）。"""
+def check_rgb_colors(document_path: str = "") -> ToolResult:
+    """检查文档中的 RGB 颜色（印前检查 — 印刷需转为 CMYK）。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _check():
@@ -218,7 +231,7 @@ def check_rgb_colors() -> ToolResult:
             pass
         return {"passed": len(rgb_items) == 0, "rgb_items": rgb_items, "count": len(rgb_items)}
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         r = result["result"]
         if r["passed"]:
@@ -227,8 +240,11 @@ def check_rgb_colors() -> ToolResult:
     return ToolResult.fail(result.get("error", "RGB 检查失败"))
 
 
-def get_color_report() -> ToolResult:
-    """生成当前页顶层形状的纯色填充报告（CMYK、RGB、Pantone）。"""
+def get_color_report(document_path: str = "") -> ToolResult:
+    """生成当前页顶层形状的纯色填充报告（CMYK、RGB、Pantone）。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _report():
@@ -270,7 +286,7 @@ def get_color_report() -> ToolResult:
             "passed": len(rgb_colors) == 0,
         }
 
-    result = conn.safe_call(_report)
+    result = call_on_active(conn, document_path, _report, read_only=True)
     if result["success"]:
         r = result["result"]
         return ToolResult.ok(f"色彩报告: {r['total_shapes']}个形状, CMYK={len(r['cmyk_colors'])}, "

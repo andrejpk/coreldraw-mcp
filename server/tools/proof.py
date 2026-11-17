@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 
 from core.connection import get_connection
 from core.models import ToolResult
-from tools.document import _scoped_document, _scoped_page
+from core.targets import resolve_document, resolve_page
 
 _PDF_PAGE_RANGE = 3
 _PDF_NATIVE_COLOR = 3
@@ -16,8 +16,10 @@ def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResu
     conn = get_connection()
 
     def read_view():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        view = doc.ActiveWindow.ActiveView
+        # Only the active document has an ActiveWindow; reading uses its first window instead.
+        doc, actual_path = resolve_document(conn.app, document_path, activate=enabled is not None)
+        window = doc.ActiveWindow or doc.Windows.Item(1)
+        view = window.ActiveView
         if enabled is not None:
             view.SimulateOverprints = enabled
         return {"document_path": actual_path, "simulate_overprints": bool(view.SimulateOverprints)}
@@ -32,17 +34,17 @@ def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResu
 
 
 def get_simulate_overprints(document_path: str) -> ToolResult:
-    """Read Simulate Overprints in the window of the specified active saved drawing."""
+    """Read Simulate Overprints in the window of an exact open document."""
     return _overprint_view(document_path)
 
 
 def set_simulate_overprints(document_path: str, enabled: bool) -> ToolResult:
-    """Set Simulate Overprints in the specified active drawing's window and read the state back."""
+    """Set Simulate Overprints in an exact open document's window (activates it) and read the state back."""
     return _overprint_view(document_path, enabled)
 
 
 def get_print_separation_settings(document_path: str) -> ToolResult:
-    """Read the active drawing's print configuration and CorelDRAW's available separation plates.
+    """Read an exact open document's print configuration and CorelDRAW's available separation plates.
 
     Plate availability and enabled flags describe configuration for the print range. They
     cannot establish which pages emit a non-empty plate, its image, or RIP output. This
@@ -51,7 +53,7 @@ def get_print_separation_settings(document_path: str) -> ToolResult:
     conn = get_connection()
 
     def read_settings():
-        doc, actual_path = _scoped_document(conn.app, document_path)
+        doc, actual_path = resolve_document(conn.app, document_path)
         settings = doc.PrintSettings
         separations = settings.Separations
         fields = {
@@ -157,8 +159,8 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str)
         return ToolResult.fail(str(exc))
 
     def publish():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        _scoped_page(doc, page_index)
+        doc, actual_path = resolve_document(conn.app, document_path)
+        resolve_page(doc, page_index)
         size = _publish_page(doc, page_index, destination)
         return {
             "document_path": actual_path, "page_index": page_index, "output_path": str(destination),
@@ -184,7 +186,7 @@ def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str,
     default, which renderers show as blank, so a hidden target is made visible while publishing.
     Afterward the tool restores and verifies each layer's printability and visibility, the PDF
     settings, the active page, the document unit, and the unsaved-changes flag, after success or
-    failure. No print job is sent.
+    failure. Activates the document. No print job is sent.
     """
     conn = get_connection()
     try:
@@ -193,8 +195,9 @@ def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str,
         return ToolResult.fail(str(exc))
 
     def publish():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
+        # Layer flags change while publishing, so the document is activated like any edit.
+        doc, actual_path = resolve_document(conn.app, document_path, activate=True)
+        page = resolve_page(doc, page_index)
         layers = list(page.AllLayers)
         targets = [layer for layer in layers if layer.Name == layer_name and not layer.Master
                    and not layer.IsSpecialLayer]

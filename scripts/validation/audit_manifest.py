@@ -79,7 +79,9 @@ def _spot_number(name):
     return int(m.group(1)) if m else None
 
 
-def artifacts(shapes, page_w=None, page_h=None):
+def artifacts(shapes, page_w=None, page_h=None, unit="mm"):
+    """Heuristic cleanup targets. Bounds, page size and widths are in ``unit`` (the document unit)."""
+    mm = {"mm": 1.0, "in": 1 / 25.4, "cm": 0.1, "pt": 72 / 25.4}[unit]  # one mm in ``unit``
     out = {"zero_size": [], "invisible": [], "duplicates": [], "near_spots": [], "trans_white": [],
            "hairline": [], "off_page": [], "hidden_printable": []}
     seen = defaultdict(list)
@@ -89,11 +91,11 @@ def artifacts(shapes, page_w=None, page_h=None):
             continue
         b = s.get("bounds") or {}
         f, o = s.get("fill") or {}, s.get("outline") or {}
-        if b and (b.get("width", 1) < 0.01 or b.get("height", 1) < 0.01):
+        if b and (b.get("width", 1) < 0.01 * mm or b.get("height", 1) < 0.01 * mm):
             out["zero_size"].append((s["shape_id"], s["layer"]["name"], b))
         if f.get("type") == 0 and o.get("type") == 0:
             out["invisible"].append((s["shape_id"], s["layer"]["name"]))
-        if o.get("type") == 1 and 0 < (o.get("width") or 0) < 0.1:
+        if o.get("type") == 1 and 0 < (o.get("width") or 0) < 0.1 * mm:
             out["hairline"].append((s["shape_id"], s["layer"]["name"], o.get("width")))
         for part, c in _paints(s):
             if c["kind"] == "spot":
@@ -102,8 +104,8 @@ def artifacts(shapes, page_w=None, page_h=None):
                 if "trans" in c["name"].lower() and "white" in c["name"].lower():
                     out["trans_white"].append((s["shape_id"], s["layer"]["name"], part, s.get("type")))
         if b:
-            key = (s["layer"]["name"], s.get("type"), round(b["left"], 2), round(b["bottom"], 2),
-                   round(b["width"], 2), round(b["height"], 2), str(f.get("color")), str(o.get("color")))
+            key = (s["layer"]["name"], s.get("type"), round(b["left"] / mm, 2), round(b["bottom"] / mm, 2),
+                   round(b["width"] / mm, 2), round(b["height"] / mm, 2), str(f.get("color")), str(o.get("color")))
             seen[key].append(s["shape_id"])
             if page_w and (b["left"] + b["width"] < 0 or b["left"] > page_w or b["bottom"] > page_h
                            or b["bottom"] + b["height"] < 0) and _printable(s):

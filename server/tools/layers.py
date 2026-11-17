@@ -2,7 +2,7 @@
 
 from core.connection import get_connection
 from core.models import ToolResult
-from tools.document import _scoped_document, _scoped_page
+from core.targets import call_on_active, resolve_document, resolve_page
 
 
 def _find_shape(shape_id: str):
@@ -28,8 +28,11 @@ def _find_shape(shape_id: str):
         return None
 
 
-def create_layer(name: str, color: str = "") -> ToolResult:
-    """创建新图层。color 用于图层标识（激光机识别），如 'red' / 'blue'。"""
+def create_layer(document_path: str, name: str, color: str = "") -> ToolResult:
+    """创建新图层。color 用于图层标识（激光机识别），如 'red' / 'blue'。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _create():
@@ -48,14 +51,17 @@ def create_layer(name: str, color: str = "") -> ToolResult:
                 pass
         return {"name": name, "color": color, "visible": True, "editable": True}
 
-    result = conn.safe_call(_create)
+    result = call_on_active(conn, document_path, _create)
     if result["success"]:
         return ToolResult.ok(f"图层已创建: {name}", **result["result"])
     return ToolResult.fail(result.get("error", "创建图层失败"))
 
 
-def get_layers() -> ToolResult:
-    """获取当前页面的所有图层信息。"""
+def get_layers(document_path: str = "") -> ToolResult:
+    """获取当前页面的所有图层信息。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _list():
@@ -90,14 +96,17 @@ def get_layers() -> ToolResult:
             pass
         return {"layers": layers_list, "count": len(layers_list)}
 
-    result = conn.safe_call(_list)
+    result = call_on_active(conn, document_path, _list, read_only=True)
     if result["success"]:
         return ToolResult.ok(f"共 {result['result']['count']} 个图层", **result["result"])
     return ToolResult.fail(result.get("error", "获取图层列表失败"))
 
 
-def assign_to_layer(shape_id: str, layer_name: str) -> ToolResult:
-    """将形状移动到指定图层。"""
+def assign_to_layer(document_path: str, shape_id: str, layer_name: str) -> ToolResult:
+    """将形状移动到指定图层。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _assign():
@@ -121,14 +130,17 @@ def assign_to_layer(shape_id: str, layer_name: str) -> ToolResult:
                 raise RuntimeError(f"无法移动形状到图层: {layer_name}")
         return {"shape_id": shape_id, "layer": layer_name}
 
-    result = conn.safe_call(_assign)
+    result = call_on_active(conn, document_path, _assign)
     if result["success"]:
         return ToolResult.ok(f"形状已移至图层: {layer_name}", **result["result"])
     return ToolResult.fail(result.get("error", "分配图层失败"))
 
 
-def set_layer_visible(layer_name: str, visible: bool) -> ToolResult:
-    """设置图层的可见性。"""
+def set_layer_visible(document_path: str, layer_name: str, visible: bool) -> ToolResult:
+    """设置图层的可见性。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _set():
@@ -140,15 +152,18 @@ def set_layer_visible(layer_name: str, visible: bool) -> ToolResult:
         layer.Visible = visible
         return {"layer": layer_name, "visible": visible}
 
-    result = conn.safe_call(_set)
+    result = call_on_active(conn, document_path, _set)
     if result["success"]:
         status = "可见" if visible else "隐藏"
         return ToolResult.ok(f"图层 {layer_name} 已设为{status}", **result["result"])
     return ToolResult.fail(result.get("error", "设置图层可见性失败"))
 
 
-def lock_layer(layer_name: str) -> ToolResult:
-    """锁定图层，防止意外编辑。"""
+def lock_layer(document_path: str, layer_name: str) -> ToolResult:
+    """锁定图层，防止意外编辑。
+
+    Active document only (document_path).
+    """
     conn = get_connection()
 
     def _lock():
@@ -160,7 +175,7 @@ def lock_layer(layer_name: str) -> ToolResult:
         layer.Editable = False
         return {"layer": layer_name, "locked": True}
 
-    result = conn.safe_call(_lock)
+    result = call_on_active(conn, document_path, _lock)
     if result["success"]:
         return ToolResult.ok(f"图层已锁定: {layer_name}", **result["result"])
     return ToolResult.fail(result.get("error", "锁定图层失败"))
@@ -179,15 +194,15 @@ def _layer_state(layer):
 
 
 def get_page_layers(document_path: str, page_index: int) -> ToolResult:
-    """Read layer visibility, editability, and printability on a specific page of the active saved document.
+    """Read layer visibility, editability, and printability on one page of an exact open document.
 
     page_index is one-based. Shared master layers are identified in the result.
     """
     conn = get_connection()
 
     def inspect():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
+        doc, actual_path = resolve_document(conn.app, document_path)
+        page = resolve_page(doc, page_index)
         return {
             "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
             "layers": [_layer_state(layer) for layer in page.AllLayers],
@@ -205,8 +220,8 @@ def set_page_layer_state(
 ) -> ToolResult:
     """Set one flag (visible, editable, or printable) on an exact page-local layer and read back all flags.
 
-    document_path must match the active saved file, page_index is one-based, and layer_name
-    must match exactly. editable=True unlocks the layer. Set allow_page_guides=True
+    document_path is any open document (from list_documents), page_index is one-based, and layer_name
+    must match exactly. Activates the document. editable=True unlocks the layer. Set allow_page_guides=True
     to change printable on CorelDRAW's guideline layer for this page. Shared layers,
     desktop/grid layers, and other edits to special layers are excluded.
     """
@@ -215,8 +230,8 @@ def set_page_layer_state(
         return ToolResult.fail("property_name must be visible, editable, or printable")
 
     def set_state():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
+        doc, actual_path = resolve_document(conn.app, document_path, activate=True)
+        page = resolve_page(doc, page_index)
         matches = [layer for layer in page.Layers if layer.Name == layer_name]
         if len(matches) != 1:
             raise ValueError(f"Expected exactly one layer named {layer_name!r} on page {page_index}")

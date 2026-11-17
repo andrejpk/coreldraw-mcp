@@ -12,7 +12,8 @@ from core.drawing import (
     CDR_GROUP_SHAPE,
 )
 from core.models import ToolResult
-from tools.document import _scoped_document, _scoped_page
+from core.targets import resolve_document, resolve_page
+from core.units import unit_name
 from tools.shapes import _create_shape_range, _static_id
 
 _CDR_NO_FILL = 0
@@ -290,9 +291,10 @@ def inspect_shapes(
     limit: int | None = None,
     fields: list[InspectionField] | None = None,
 ) -> ToolResult:
-    """Inspect a saved active document's one-based page and shared layers without changing the UI.
+    """Inspect one-based page of an exact open document, and its shared layers, without changing anything.
 
-    Returns exact IDs, nested group ancestry, order, bounds in document units, effects,
+    document_path is any open document (it need not be active). Returns exact IDs, nested group
+    ancestry, order, bounds in the document unit (document_unit, e.g. "in"), effects,
     uniform fill and outline colors, overprint flags, and layer visibility/printability.
     Unknown color types and unreadable fields require further inspection. This is an
     artwork inventory. CorelDRAW's print preview determines actual separation output.
@@ -309,8 +311,8 @@ def inspect_shapes(
     wanted_fields = None if fields is None else set(fields)
 
     def inspect():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
+        doc, actual_path = resolve_document(conn.app, document_path)
+        page = resolve_page(doc, page_index)
         layers = [(layer, layer.Name) for layer in page.AllLayers]
         if layer_name is not None:
             layers = [(layer, name) for layer, name in layers if name == layer_name]
@@ -331,7 +333,7 @@ def inspect_shapes(
             shapes.extend(_read_records(layer, _layer_details(layer, name), anchors[number], entries, wanted_fields))
         return {
             "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
-            "document_unit": doc.Unit, "shapes": shapes, "next_offset": next_offset,
+            "document_unit": unit_name(doc.Unit), "shapes": shapes, "next_offset": next_offset,
         }
 
     result = conn.safe_call(inspect)
@@ -344,9 +346,10 @@ def _selection(document_path: str, page_index: int, shape_ids: list[str] | None 
     conn = get_connection()
 
     def select():
-        doc, actual_path = _scoped_document(conn.app, document_path)
+        # Changing the UI selection needs the document to be the active one; reading it does not.
+        doc, actual_path = resolve_document(conn.app, document_path, activate=shape_ids is not None)
         if doc.ActivePage.Index != page_index:
-            raise ValueError(f"Page {page_index} must be active to use its UI selection")
+            raise ValueError(f"Page {page_index} must be the document's active page (edit_pages action=activate)")
         if shape_ids is not None:
             _create_shape_range(_exact_shapes(doc.ActivePage, shape_ids)).CreateSelection()
         selection = doc.SelectionRange
@@ -365,12 +368,12 @@ def _selection(document_path: str, page_index: int, shape_ids: list[str] | None 
 
 
 def get_ui_selection(document_path: str, page_index: int) -> ToolResult:
-    """Read exact shape IDs in the UI selection of the specified active document and one-based page."""
+    """Read exact shape IDs in the UI selection of an exact open document; page_index must be its active page."""
     return _selection(document_path, page_index)
 
 
 def select_shapes_by_id(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
-    """Replace the UI selection on the specified active document and page with one or more exact StaticIDs."""
+    """Replace the UI selection with exact StaticIDs; activates the document. page_index must be its active page."""
     return _selection(document_path, page_index, shape_ids)
 
 
@@ -391,8 +394,9 @@ def _on_shapes(document_path, page_index, shape_ids, action, *, write=False) -> 
     conn = get_connection()
 
     def run():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
+        # Edits activate the document: Undo and command groups follow the active document.
+        doc, actual_path = resolve_document(conn.app, document_path, activate=write)
+        page = resolve_page(doc, page_index)
         shapes = _exact_shapes(page, shape_ids)
         if write:
             for shape in shapes:

@@ -2,7 +2,7 @@
 import ntpath, sys, json; sys.path.insert(0, ".")
 from core.connection import get_connection
 conn = get_connection()
-RUN = ntpath.normcase(r"C:\CorelMcpLab\runs\e01") + "\\"
+RUN = ntpath.normcase(__import__("os").environ.get("AUDIT_RUN", r"C:\CorelMcpLab\runs\e01")) + "\\"
 def find(doc, sid):
     from core.drawing import walk_shapes
     for p in range(1, doc.Pages.Count + 1):

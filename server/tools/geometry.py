@@ -4,7 +4,7 @@ import math
 
 from core.drawing import CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, walk_shapes
 from core.models import ToolResult
-from tools.document import _UNIT_MAP
+from core.units import unit_code
 from tools.inspection import (
     _CDR_UNIFORM_FILL,
     _STRUCTURE_BATCH,
@@ -29,7 +29,7 @@ _ANCHORS = {
     "middle_right": (8, "RightX", "CenterY"),
     "center": (9, "CenterX", "CenterY"),
 }
-_UNITS = {unit: _UNIT_MAP[unit] for unit in ("mm", "cm", "inch", "pt")}
+_UNITS = {unit: unit_code(unit) for unit in ("mm", "cm", "in", "inch", "pt")}
 _CDR_TENTH_MICRON = 0
 _WELDABLE = (1, 2, CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, 26)
 
@@ -40,12 +40,12 @@ def set_shape_position_exact(
 ) -> ToolResult:
     """Move an exact shape to absolute page coordinates and read its anchor position back.
 
-    Use mm, cm, inch, or pt. Anchors: center, top_left, top_center, top_right,
+    Use mm, cm, in (inch), or pt. Anchors: center, top_left, top_center, top_right,
     middle_left, middle_right, bottom_left, bottom_center, bottom_right.
     An omitted coordinate preserves that axis. The requested page must be active.
     """
     if anchor not in _ANCHORS or unit not in _UNITS:
-        return ToolResult.fail("Specify a supported anchor and unit (mm, cm, inch, or pt)")
+        return ToolResult.fail("Specify a supported anchor and unit (mm, cm, in (inch), or pt)")
     if (x is None and y is None) or any(value is not None and not math.isfinite(value) for value in (x, y)):
         return ToolResult.fail("Provide at least one finite coordinate")
 
@@ -75,9 +75,9 @@ def set_shape_position_exact(
 def duplicate_shape_by_id(
     document_path: str, page_index: int, shape_id: str, unit: str, dx: float = 0, dy: float = 0,
 ) -> ToolResult:
-    """Duplicate one exact shape, offset by dx/dy in mm, cm, inch, or pt, and return its new ID."""
+    """Duplicate one exact shape, offset by dx/dy in mm, cm, in (inch), or pt, and return its new ID."""
     if unit not in _UNITS or not all(math.isfinite(value) for value in (dx, dy)):
-        return ToolResult.fail("Specify mm, cm, inch, or pt and finite offsets")
+        return ToolResult.fail("Specify mm, cm, in (inch), or pt and finite offsets")
 
     def duplicate(app, doc, shape):
         horizontal = app.ConvertUnits(dx, _UNITS[unit], doc.Unit)
@@ -107,7 +107,7 @@ def duplicate_shapes_by_id(
 ) -> ToolResult:
     """Duplicate the exact shapes in one undo group and return a source-to-copy ID mapping."""
     if unit not in _UNITS or not all(math.isfinite(value) for value in (dx, dy)):
-        return ToolResult.fail("Specify mm, cm, inch, or pt and finite offsets")
+        return ToolResult.fail("Specify mm, cm, in (inch), or pt and finite offsets")
 
     def duplicate(app, doc, shapes):
         horizontal = app.ConvertUnits(dx, _UNITS[unit], doc.Unit)

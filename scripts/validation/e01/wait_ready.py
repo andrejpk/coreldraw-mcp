@@ -1,7 +1,7 @@
 import sys, time, json; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1]))
-from audit_lib import Session
+from audit_lib import RUN, Session
 t = time.time()
-with Session(r"C:\CorelMcpLab\runs\e01\calls.jsonl") as s:
+with Session(RUN + r"\calls.jsonl") as s:
     s.task = "wedge recovery"
     while True:
         r = s.call("get_coreldraw_status")

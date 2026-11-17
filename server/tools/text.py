@@ -5,7 +5,8 @@ from itertools import groupby
 from core.connection import get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
-from tools.document import _scoped_page
+from core.targets import call_on_active, resolve_page
+from core.units import MILLIMETER, convert
 from tools.inspection import (
     _CDR_NO_FILL,
     _CDR_UNIFORM_FILL,
@@ -19,7 +20,6 @@ from tools.inspection import (
 )
 
 _CDR_PARAGRAPH_TEXT = 1
-_CDR_MILLIMETER = 3
 _ALIGNMENT_MAP = {"left": 0, "center": 3, "right": 1, "none": 0}
 
 
@@ -189,7 +189,7 @@ def copy_fill_to_text_range(
             raise ValueError(f"The text has {len(before)} characters; end must not exceed it")
         if any(fill["type"] not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL) for _, fill in before[start:end]):
             raise ValueError("Characters in the range must have no fill or a uniform fill")
-        donor, = _exact_shapes(_scoped_page(doc, page_index), [source_shape_id])
+        donor, = _exact_shapes(resolve_page(doc, page_index), [source_shape_id])
         if donor.Fill.Type != _CDR_UNIFORM_FILL:
             raise ValueError("The donor must have a uniform fill")
         color = donor.Fill.UniformColor.GetCopy()
@@ -264,8 +264,11 @@ def _apply_default_text_style(shape, frame_height: float) -> None:
         pass
 
 
-def set_text_content(shape_id: str, content: str) -> ToolResult:
-    """替换文字形状的文本内容。shape_id 为形状名称或 ID。"""
+def set_text_content(document_path: str, shape_id: str, content: str) -> ToolResult:
+    """替换文字形状的文本内容。shape_id 为形状名称或 ID。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _set():
@@ -277,13 +280,14 @@ def set_text_content(shape_id: str, content: str) -> ToolResult:
         text_type = "段落文字" if shape.Text.Type == _CDR_PARAGRAPH_TEXT else "美术字"
         return {"shape_id": shape_id, "old_content": old_content, "new_content": content, "text_type": text_type}
 
-    result = conn.safe_call(_set)
+    result = call_on_active(conn, document_path, _set)
     if result["success"]:
         return ToolResult.ok(f"文字已替换: '{result['result']['old_content']}' → '{content}'", **result["result"])
     return ToolResult.fail(result.get("error", "替换文字失败"))
 
 
 def set_text_style(
+    document_path: str,
     shape_id: str,
     font: str = "",
     size: float = 0,
@@ -291,7 +295,10 @@ def set_text_style(
     italic: bool = False,
     alignment: str = "",
 ) -> ToolResult:
-    """设置文字形状的样式：字体、字号、粗体、斜体、对齐。"""
+    """设置文字形状的样式：字体、字号、粗体、斜体、对齐。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _style():
@@ -325,15 +332,18 @@ def set_text_style(
             raise ValueError("未指定任何样式变更")
         return {"shape_id": shape_id, "changes": changes}
 
-    result = conn.safe_call(_style)
+    result = call_on_active(conn, document_path, _style)
     if result["success"]:
         changes = result["result"]["changes"]
         return ToolResult.ok(f"文字样式已更新: {changes}", **result["result"])
     return ToolResult.fail(result.get("error", "设置文字样式失败"))
 
 
-def fit_text_to_frame(shape_id: str) -> ToolResult:
-    """将段文字自适应到文本框大小（仅对段落文字有效）。"""
+def fit_text_to_frame(document_path: str, shape_id: str) -> ToolResult:
+    """将段文字自适应到文本框大小（仅对段落文字有效）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _fit():
@@ -345,14 +355,17 @@ def fit_text_to_frame(shape_id: str) -> ToolResult:
         shape.Text.FitTextToFrame = True
         return {"shape_id": shape_id, "fitted": True}
 
-    result = conn.safe_call(_fit)
+    result = call_on_active(conn, document_path, _fit)
     if result["success"]:
         return ToolResult.ok(f"文字已自适应到文本框", **result["result"])
     return ToolResult.fail(result.get("error", "文字自适应失败"))
 
 
-def check_text_overflow(shape_id: str) -> ToolResult:
-    """检查文字是否超出文本框（溢出）。返回溢出状态。"""
+def check_text_overflow(shape_id: str, document_path: str = "") -> ToolResult:
+    """检查文字是否超出文本框（溢出）。返回溢出状态。
+
+    Reads the active document.
+    """
     conn = get_connection()
 
     def _check():
@@ -378,15 +391,18 @@ def check_text_overflow(shape_id: str) -> ToolResult:
             "content_length": content_length,
         }
 
-    result = conn.safe_call(_check)
+    result = call_on_active(conn, document_path, _check, read_only=True)
     if result["success"]:
         status = "溢出" if result["result"]["overflowing"] else "正常"
         return ToolResult.ok(f"文字状态: {status}", **result["result"])
     return ToolResult.fail(result.get("error", "检查文字溢出失败"))
 
 
-def convert_text_to_curves(shape_id: str) -> ToolResult:
-    """将文字转换为曲线（印前必须操作，防止字体依赖）。"""
+def convert_text_to_curves(document_path: str, shape_id: str) -> ToolResult:
+    """将文字转换为曲线（印前必须操作，防止字体依赖）。
+
+    Active document only (document_path); lengths in document units.
+    """
     conn = get_connection()
 
     def _convert():
@@ -396,22 +412,24 @@ def convert_text_to_curves(shape_id: str) -> ToolResult:
         shape.ConvertToCurves()
         return {"shape_id": shape_id, "converted": True}
 
-    result = conn.safe_call(_convert)
+    result = call_on_active(conn, document_path, _convert)
     if result["success"]:
         return ToolResult.ok(f"文字已转曲: {shape_id}", **result["result"])
     return ToolResult.fail(result.get("error", "文字转曲失败"))
 
 
-def create_text_frame(x: float, y: float, width: float, height: float, text: str) -> ToolResult:
-    """创建段落文本框。返回形状 ID。"""
+def create_text_frame(document_path: str, x: float, y: float, width: float, height: float, text: str) -> ToolResult:
+    """创建段落文本框。返回形状 ID。
+
+    Active document only (document_path); x, y, width, height in mm.
+    """
     conn = get_connection()
 
     def _create():
         doc = conn.app.ActiveDocument
-        doc.Unit = _CDR_MILLIMETER
         layer = doc.ActivePage.ActiveLayer
-        left, top = x, y
-        right, bottom = x + width, y + height
+        left, top, right, bottom = (convert(value, MILLIMETER, doc.Unit, conn.app)
+                                    for value in (x, y, x + width, y + height))
         shape = layer.CreateParagraphText(left, top, right, bottom, text)
         _apply_default_text_style(shape, height)
         shape.Name = f"text_{shape.StaticID}"
@@ -422,10 +440,11 @@ def create_text_frame(x: float, y: float, width: float, height: float, text: str
             "height": height,
             "x": x,
             "y": y,
+            "unit": "mm",
             "content": text,
         }
 
-    result = conn.safe_call(_create)
+    result = call_on_active(conn, document_path, _create)
     if result["success"]:
         return ToolResult.ok(f"文本框创建成功: {width}×{height}", **result["result"])
     return ToolResult.fail(result.get("error", "创建文本框失败"))

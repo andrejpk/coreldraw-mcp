@@ -6,6 +6,7 @@ import tempfile
 from core.connection import get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
+from core.targets import call_on_active, private_document, save_as
 
 
 def read_excel_data(path: str, sheet: int = 0, has_header: bool = True) -> ToolResult:
@@ -63,27 +64,26 @@ def merge_record(template_path: str, data: dict, output_path: str) -> ToolResult
     conn = get_connection()
 
     def _merge():
-        doc = conn.app.OpenDocument(template_path)
-        page = doc.ActivePage
-        replaced = {}
-        for key, value in data.items():
-            try:
-                shapes = page.Shapes
-                for s in shapes:
-                    try:
-                        if s.Type == CDR_TEXT_SHAPE and s.Name == key:  # cdrTextShape
-                            s.Text.Story = str(value)
-                            replaced[key] = str(value)[:30]
-                            break
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-        dirpath = os.path.dirname(output_path)
-        if dirpath:
-            os.makedirs(dirpath, exist_ok=True)
-        doc.SaveAs(output_path)
-        doc.Close()
+        with private_document(conn.app, template_path) as doc:
+            page = doc.ActivePage
+            replaced = {}
+            for key, value in data.items():
+                try:
+                    shapes = page.Shapes
+                    for s in shapes:
+                        try:
+                            if s.Type == CDR_TEXT_SHAPE and s.Name == key:  # cdrTextShape
+                                s.Text.Story = str(value)
+                                replaced[key] = str(value)[:30]
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    pass
+            dirpath = os.path.dirname(output_path)
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+            save_as(conn.app, doc, output_path)
         return {"template": template_path, "output": output_path, "replaced": replaced}
 
     result = conn.safe_call(_merge)
@@ -133,8 +133,11 @@ def batch_merge(template_path: str, data_path: str, output_dir: str, naming_patt
     )
 
 
-def generate_barcode(barcode_type: str, data: str, x: float, y: float, width: float, height: float) -> ToolResult:
-    """生成条码并导入到 CorelDRAW。type 支持 code128/ean13/code39。"""
+def generate_barcode(document_path: str, barcode_type: str, data: str, x: float, y: float, width: float, height: float) -> ToolResult:
+    """生成条码并导入到 CorelDRAW。type 支持 code128/ean13/code39。
+
+    Active document only (document_path); lengths in document units.
+    """
     try:
         import barcode
         from barcode.writer import SVGWriter
@@ -183,14 +186,17 @@ def generate_barcode(barcode_type: str, data: str, x: float, y: float, width: fl
                 except Exception:
                     pass
 
-    result = conn.safe_call(_generate)
+    result = call_on_active(conn, document_path, _generate)
     if result["success"]:
         return ToolResult.ok(f"条码已生成: {barcode_type} - {data}", **result["result"])
     return ToolResult.fail(result.get("error", "生成条码失败"))
 
 
-def generate_qrcode(data: str, x: float, y: float, size: float) -> ToolResult:
-    """生成 QR Code 并导入到 CorelDRAW。"""
+def generate_qrcode(document_path: str, data: str, x: float, y: float, size: float) -> ToolResult:
+    """生成 QR Code 并导入到 CorelDRAW。
+
+    Active document only (document_path); lengths in document units.
+    """
     try:
         import qrcode
         import qrcode.image.svg
@@ -234,7 +240,7 @@ def generate_qrcode(data: str, x: float, y: float, size: float) -> ToolResult:
             except Exception:
                 pass
 
-    result = conn.safe_call(_generate)
+    result = call_on_active(conn, document_path, _generate)
     if result["success"]:
         return ToolResult.ok(f"QR Code 已生成: {data[:30]}...", **result["result"])
     return ToolResult.fail(result.get("error", "生成 QR Code 失败"))

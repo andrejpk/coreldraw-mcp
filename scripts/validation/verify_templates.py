@@ -1,7 +1,7 @@
 """Check template copies against MANIFEST.json through the running MCP server (mc.py, port 8765).
 
 Usage (from scripts/validation/): verify_templates.py <manifest.json> <copies_dir> <out.json> [file.cdr ...]
-<copies_dir> holds fresh copies of the templates in a run folder. Each copy is opened with open_template
+<copies_dir> holds fresh copies of the templates in a run folder. Each copy is opened with open_document
 and left open; close them afterwards with close_run_docs.py once the server is stopped.
 """
 import json, ntpath, sys, time
@@ -24,7 +24,7 @@ def call(tool_name, args):
 
 MANIFEST, COPIES, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 ONLY = set(sys.argv[4:])
-UNIT_TO_IN = {1: 1.0, 3: 1 / 25.4, 4: 1 / 2.54, 14: 1 / 72}
+UNIT_TO_IN = {"in": 1.0, "mm": 1 / 25.4, "cm": 1 / 2.54, "pt": 1 / 72}
 TOL = 0.003
 
 
@@ -72,11 +72,10 @@ def verify(template):
                                          "error": r.get("error") or r})
         return r
 
-    opened = tool("open_template", path=path)
+    opened = tool("open_document", path=path)
     if not opened.get("success"):
         return res
-    info = tool("get_document_info")
-    res["document_info"] = {k: info.get(k) for k in ("pages", "unit", "page_count", "shape_count") if k in info}
+    res["document_info"] = {k: opened.get(k) for k in ("page_count", "unit", "pages", "already_open")}
     by_id, unit = {}, None
     for page in template["pages"]:
         p = page["index"]
@@ -172,9 +171,9 @@ def verify(template):
         r = tool("list_all_text_shapes", page_index=1, document_path=path)
         res["list_all_text_shapes"] = r.get("count", len(r.get("shapes", r.get("text_shapes", [])) or []))
     if template["file"] in ("colors.cdr", "screen_job.cdr"):
-        r = tool("get_color_report")
+        r = tool("get_color_report", document_path=path)
         res["get_color_report"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
-        r = tool("check_rgb_colors")
+        r = tool("check_rgb_colors", document_path=path)
         res["check_rgb_colors"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
     if template["file"] == "screen_job.cdr":
         r = tool("get_print_separation_settings", document_path=path)
@@ -182,7 +181,7 @@ def verify(template):
         pdf = ntpath.join(COPIES, "screen_job_proof.pdf")
         r = tool("export_page_proof_pdf", document_path=path, page_index=1, output_path=pdf)
         res["proof_pdf"] = {k: v for k, v in r.items() if k != "_seconds"}
-    r = tool("find_shape_by_name", name=template["shapes"][0]["name"]) if template["shapes"] else {}
+    r = tool("find_shape_by_name", name=template["shapes"][0]["name"], document_path=path) if template["shapes"] else {}
     res["find_shape_by_name"] = {k: v for k, v in r.items() if k != "_seconds"} if r else None
     return res
 
