@@ -25,7 +25,7 @@ def render(pdf: Path, output: Path, ghostscript: Path, dpi: int, page: int) -> d
         ready.mkdir()
         composite_tiff = work / "ink.tif"
         result = subprocess.run(
-            [str(ghostscript), "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dPDFSTOPONERROR",
+            [str(ghostscript), "-dSAFER", "-dBATCH", "-dNOPAUSE", "-dPDFSTOPONERROR", "-dOverrideICC",
              "-sDEVICE=tiffsep", f"-r{dpi}", f"-dFirstPage={page}", f"-dLastPage={page}",
              f"-sOutputFile={composite_tiff}", "-f", str(pdf)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace", timeout=120,
