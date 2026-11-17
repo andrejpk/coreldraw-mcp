@@ -40,7 +40,7 @@ SYSTEM_PROMPT = """你是一个自动化设计 Agent，能够通过工具调用�
       - 色块边界是否正确？
       - 如有问题：调用 fit_text_to_frame 或调整字号 → 重新预览
       - 确认 OK 后继续下一步
-   g. 印前处理：convert_text_to_curves、get_ink_inventory（RGB/工艺色来源与预期印版）
+   g. 印前处理：convert_to_curves（find_shapes 找到文字 ID）、get_ink_inventory（RGB/工艺色来源与预期印版）
    h. 导出 PDF：export_pdf(路径, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
    i. 导出 DXF：先 assign_to_layer 整理图层，再 export_dxf(路径)
 3. **汇报结果**：成功数、失败数、调整项
@@ -75,7 +75,7 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 
 ## 印前/生产规范
 
-- 所有文字导出前必须 convert_text_to_curves（转曲），防止字体依赖
+- 所有文字导出前必须 convert_to_curves（转曲），防止字体依赖
 - PDF 必须用 CMYK 颜色模式（检查并转换所有 RGB 颜色）
 - PDF 必须包含出血（通常 3mm）和裁切线
 - DXF 图层按激光机要求分组（不同颜色=不同切割参数）

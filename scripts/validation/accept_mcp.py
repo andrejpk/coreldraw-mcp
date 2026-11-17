@@ -249,21 +249,23 @@ undo(DOC)
 undone = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
 check("text copy: one undo restores the original runs", fmt(undone["data"]["runs"]) == fmt(runs), fmt(undone["data"]["runs"]))
 
-# 2. Weld consecutive shapes ----------------------------------------------------------------------
+# 2. Weld consecutive shapes (E13: combine_shapes weld with preserve_order) ----------------------------
 W = lambda *names: [IDS[n] for n in names]  # noqa: E731
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c1", "c3"))
+WELD = dict(document_path=DOC, page_index=1, operation="weld")
+r = call("combine_shapes", **WELD, shape_ids=W("c1", "c3"))
 check("weld: non-consecutive shapes rejected", not r["success"] and "consecutive" in r["error"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c3", "tint60"))
+r = call("combine_shapes", **WELD, shape_ids=W("c3", "tint60"))
 check("weld: different tint rejected", not r["success"] and "tint" in r["error"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("top", "c1"))
+r = call("combine_shapes", **WELD, shape_ids=W("top", "c1"))
 check("weld: different spot rejected", not r["success"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c1", "b"))
+r = call("combine_shapes", **WELD, shape_ids=W("c1", "b"))
 check("weld: shapes on different layers rejected", not r["success"], r.get("error"))
 before = call("inspect_shapes", document_path=DOC, page_index=1, layer_name="Weld", fields=["z_order", "fill"])
 order_before = [s["shape_id"] for s in before["data"]["shapes"]]
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c2", "c3", "c1"))
-check("weld: consecutive run welds", r["success"], r.get("error") or {k: r["data"][k] for k in ("result_shape_id", "stack_index", "area")})
-data = r["data"]
+r = call("combine_shapes", **WELD, shape_ids=W("c2", "c3", "c1"))
+check("weld: consecutive run welds", r["success"], r.get("error") or {k: r["data"][k] for k in ("result_ids", "stack_index")})
+data = dict(r["data"], result_shape_id=r["data"]["result_ids"][0], area=r["data"]["results"][0]["area"],
+            source_area_sum=sum(x["area"] for x in r["data"]["sources"]))
 check("weld: neighbors unchanged", data["above_shape_id"] == IDS["top"] and data["below_shape_id"] == IDS["tint60"],
       (data["above_shape_id"], data["below_shape_id"]))
 after = call("inspect_shapes", document_path=DOC, page_index=1, layer_name="Weld", fields=["z_order", "fill"])
@@ -409,9 +411,9 @@ check("cache, out-of-band: new top-level shapes appear", r1 in ids(inv) and r2 i
 gone = edit(lambda doc, layers, named: (str(named["deep_leaf2"].StaticID), named["deep_leaf2"].Delete())[0])
 inv = mcp_inventory(ST)
 check("cache, out-of-band: a deleted nested shape disappears", gone not in ids(inv) and inv == truth(ST))
-r = call("inspect_contours", document_path=ST, page_index=1, shape_id=gone)
-check("cache, out-of-band: exact-ID read of the deleted shape fails as not found",
-      not r["success"] and "not found" in r["error"], r.get("error"))
+r = call("find_shapes", document_path=ST, pages=[1], filters={"ids": [gone]})
+check("cache, out-of-band: exact-ID lookup of the deleted shape reports it missing",
+      r["success"] and r["data"]["count"] == 0 and r["data"].get("missing_ids") == [gone], r.get("error") or r["data"])
 before = ids(mcp_inventory(ST))
 edit(lambda doc, layers, named: named["nest_l1"].OrderToBack())
 inv = mcp_inventory(ST)
@@ -439,9 +441,10 @@ inv = mcp_inventory(ST)
 moved = {s["shape_id"]: s["layer"]["name"] for s in inv}
 check("cache, out-of-band: shapes swapped between layers (counts unchanged) are reported on their new layers",
       moved.get(r1) == "PowerClip" and moved.get(r2) == "Groups" and inv == truth(ST), (moved.get(r1), moved.get(r2)))
-r = call("inspect_contours", document_path=ST, page_index=1, shape_id=r1)
-check("cache, out-of-band: exact-ID read finds a moved shape", r["success"], r.get("error"))
-r = call("duplicate_shape_by_id", document_path=ST, page_index=1, shape_id=r2, unit="in", dx=0.1)
+r = call("find_shapes", document_path=ST, pages=[1], filters={"ids": [r1]})
+check("cache, out-of-band: exact-ID lookup finds a moved shape on its new layer",
+      r["success"] and [x["layer"] for x in r["data"]["shapes"]] == ["PowerClip"], r.get("error") or r["data"])
+r = call("duplicate_shapes", document_path=ST, page_index=1, shape_ids=[r2], unit="in", dx=0.1)
 inv = mcp_inventory(ST)
 new_ids = set(ids(inv)) - set(ids(base)) - {r1, r2}
 check("cache, MCP edit: a duplicate made through the server appears", r["success"] and len(new_ids) == 1

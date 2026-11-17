@@ -39,8 +39,8 @@ from tools.text import (
     create_text_frame,
     set_text_content,
     check_text_overflow,
-    convert_text_to_curves,
 )
+from tools.geometry import convert_to_curves
 from tools.shapes import (
     create_rectangle,
     create_ellipse,
@@ -204,11 +204,10 @@ def test_step6_preflight(tr: TestResult):
     result2 = get_ink_inventory(DOC.path)
     tr.step("油墨/印版清单 (RGB 与工艺色来源)", result2)
 
-    result3 = convert_text_to_curves(DOC.path, "placeholder_room")
-    tr.step("placeholder_room 转曲", result3)
-
-    result4 = convert_text_to_curves(DOC.path, "placeholder_dept")
-    tr.step("placeholder_dept 转曲", result4)
+    found = find_shapes(DOC.path, pages=[1], filters={"name": "placeholder_*", "type": "text"})
+    ids = [shape["id"] for shape in (found.data or {}).get("shapes", [])]
+    result3 = convert_to_curves(DOC.path, 1, ids)
+    tr.step("placeholder_* 转曲 (convert_to_curves)", result3)
 
 
 def test_step7_layers(tr: TestResult):

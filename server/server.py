@@ -70,6 +70,7 @@ def register_tools():
         proof,
         recolor,
         shapes,
+        silhouette,
         templates,
         text,
     )
@@ -90,8 +91,6 @@ def register_tools():
     mcp.add_tool(shapes.import_image)
     mcp.add_tool(shapes.set_shape_size)
     mcp.add_tool(shapes.set_shape_position)
-    mcp.add_tool(shapes.boolean_operation)
-    mcp.add_tool(shapes.convert_to_curves)
     mcp.add_tool(shapes.group_shapes)
     mcp.add_tool(shapes.align_shapes)
     mcp.add_tool(shapes.distribute_shapes)
@@ -105,14 +104,13 @@ def register_tools():
     mcp.add_tool(Tool.from_function(inks.get_ink_inventory, annotations={"readOnlyHint": True}))
     mcp.add_tool(find.find_shapes)
     mcp.add_tool(Tool.from_function(inspection.get_ui_selection, annotations={"readOnlyHint": True}))
-    mcp.add_tool(effects.inspect_contours)
     mcp.add_tool(effects.apply_contour)
-    mcp.add_tool(effects.break_contour_apart)
+    mcp.add_tool(effects.separate_effect)
+    mcp.add_tool(silhouette.offset_silhouette)
     mcp.add_tool(geometry.set_shape_position_exact)
-    mcp.add_tool(geometry.duplicate_shape_by_id)
-    mcp.add_tool(geometry.duplicate_shapes_by_id)
-    mcp.add_tool(geometry.weld_copies_by_id)
-    mcp.add_tool(geometry.weld_consecutive_shapes)
+    mcp.add_tool(geometry.duplicate_shapes)
+    mcp.add_tool(geometry.combine_shapes)
+    mcp.add_tool(geometry.convert_to_curves)
     mcp.add_tool(geometry.delete_shape_by_id)
     mcp.add_tool(proof.simulate_overprints)
     mcp.add_tool(proof.get_print_separation_settings)
@@ -125,7 +123,6 @@ def register_tools():
     mcp.add_tool(text.set_text_style)
     mcp.add_tool(text.fit_text_to_frame)
     mcp.add_tool(text.check_text_overflow)
-    mcp.add_tool(text.convert_text_to_curves)
     mcp.add_tool(text.create_text_frame)
 
     mcp.add_tool(colors.set_fill)

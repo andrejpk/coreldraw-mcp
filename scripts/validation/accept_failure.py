@@ -1,4 +1,5 @@
-"""In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, partial-weld rollback, and why edits activate their document (Undo)."""
+"""In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, rollback of
+geometry edits that fail part way (combine_shapes, offset_silhouette), and why edits activate their document (Undo)."""
 import json, sys
 sys.path.insert(0, ".")
 from core.connection import get_connection
@@ -67,25 +68,75 @@ print("PASS" if not r.success and "GHOSTSCRIPT_EXE" in r.error and not os.path.e
       "render_plates without Ghostscript fails clearly and writes nothing:", r.error)
 
 
-# The weld rollback depends on detecting a partial weld and on Undo(1) restoring the sources.
-def partial():
+# E13: a geometry edit that fails part way is undone as one step (core.shapeops.undoable): the sources come back,
+# and an earlier edit in the same document is not undone with it.
+def layer_ids(name):
+    def run():
+        doc = fixture()
+        layer = [l for l in doc.Pages(1).Layers if l.Name == name][0]
+        return sorted(str(x.StaticID) for x in layer.Shapes)
+    return conn.safe_call(run)["result"]
+
+
+def earlier_edit():
     doc = fixture()
-    layer = [l for l in doc.Pages(1).Layers if l.Name == "Weld"][0]
-    find = lambda i: [x for x in layer.Shapes if str(x.StaticID) == IDS[i]][0]  # noqa: E731
-    c1, c2, c3 = find("c1"), find("c2"), find("c3")
-    doc.BeginCommandGroup("Weld consecutive shapes")
-    result = c2.Weld(c1, False, False)
-    doc.EndCommandGroup()
-    result_id = str(result.StaticID)
-    survivors = geometry._surviving(layer, [IDS["c1"], IDS["c2"], IDS["c3"]])
-    doc.Undo(1)
-    restored = geometry._surviving(layer, [IDS["c1"], IDS["c2"], IDS["c3"]])
-    return {"after_partial": sorted(survivors), "after_undo": sorted(restored), "result": result_id}
+    layer = [l for l in doc.Pages(1).Layers if l.Name == "Ink B"][0]
+    return str(layer.CreateRectangle2(150, 150, 5, 5).StaticID)
 
 
-r = conn.safe_call(partial); print(r); r = r["result"]
-ok = r["after_partial"] == [IDS["c3"]] and r["after_undo"] == sorted([IDS["c1"], IDS["c2"], IDS["c3"]])
-print("PASS" if ok else "FAIL", "rollback primitive: _surviving detects a partial weld and Undo(1) restores sources", r)
+marker = conn.safe_call(earlier_edit)["result"]
+weld_before = layer_ids("Weld")
+
+
+def failing_weld(shapes, ids, keep, layer, order):
+    stack = order["stack"]
+    shapes[stack[1]].Weld(shapes[stack[0]], False, False)  # a partial weld really happens
+    raise RuntimeError("simulated failure after a partial weld")
+
+
+original_weld = geometry._OPERATIONS["weld"]
+geometry._OPERATIONS["weld"] = failing_weld
+try:
+    r = geometry.combine_shapes(DOC, 1, [IDS["c2"], IDS["c3"], IDS["c1"]], "weld")
+finally:
+    geometry._OPERATIONS["weld"] = original_weld
+ok = (not r.success and "simulated" in r.error and "page is unchanged" in r.error
+      and layer_ids("Weld") == weld_before and marker in layer_ids("Ink B"))
+print("PASS" if ok else "FAIL", "combine_shapes: a failure after a partial weld is undone; an earlier edit survives:",
+      r.error, layer_ids("Weld"), weld_before)
+
+
+def failing_contour(*args, **kwargs):
+    raise RuntimeError("simulated failure after the copies were made")
+
+
+from tools import silhouette  # noqa: E402
+original_union = silhouette._union
+
+
+def union_then_fail(app, doc, layer, participants, sources):
+    original_union(app, doc, layer, participants, sources)  # copies and the temporary union shape exist now
+    failing_contour()
+
+
+silhouette._union = union_then_fail
+try:
+    r = silhouette.offset_silhouette(DOC, 1, [IDS["c1"], IDS["b"]], 1.0, unit="mm", target_layer="Ink B")
+finally:
+    silhouette._union = original_union
+ok = (not r.success and "simulated" in r.error and "page is unchanged" in r.error
+      and layer_ids("Weld") == weld_before and marker in layer_ids("Ink B"))
+print("PASS" if ok else "FAIL", "offset_silhouette: a failure after the temporary copies is undone; an earlier edit "
+      "survives:", r.error)
+
+
+def remove_marker():
+    doc = fixture()
+    layer = [l for l in doc.Pages(1).Layers if l.Name == "Ink B"][0]
+    [x for x in layer.Shapes if str(x.StaticID) == marker][0].Delete()
+
+
+conn.safe_call(remove_marker)
 
 
 # Edits activate their document because CorelDRAW applies Document.Undo to the active document.

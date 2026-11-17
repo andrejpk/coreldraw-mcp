@@ -54,9 +54,10 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 | Module | Tools | Functionality |
 |--------|-------|---------------|
 | `document` | 7 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), guidelines. Every tool takes an exact `document_path`; units are never changed |
-| `shapes` | 18 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops, arrange, group |
+| `shapes` | 16 | Rectangle / ellipse / line drawing, SVG / image import, arrange, group (legacy, active document) |
+| `geometry` + `silhouette` + `effects` | 8 | `offset_silhouette` (combined underbase / spread in one call: welds fills, stroked outlines and text of exact objects across layers, skips `exclude_colors`, contours inside or outside, fill, overprint, target layer; verified area and inset), `combine_shapes` (weld / trim / intersect / combine / break apart, keep sources, target layer, order-preserving weld), `duplicate_shapes`, `convert_to_curves` (exact IDs), `apply_contour`, `separate_effect` (contour, drop shadow, extrude, blend), `set_shape_position_exact`, `delete_shape_by_id`; one undo step each, failures rolled back |
 | `find` | 1 | `find_shapes`: combinable filters (type, name glob, color spec on fill/outline/text runs, sizes, bounds, on/off page, layer flags, text, effects, PowerClips, depth, overprint, read-only CQL) and cleanup presets (zero size, invisible, stacked duplicates, off page, hairline, empty text, tiny, hidden-but-printable, registration on art); paged records, counts, optional UI selection |
-| `text` | 5 | Text replacement, style, overflow detection, convert to curves |
+| `text` | 7 | Text replacement, style, fill runs, overflow detection, text frames |
 | `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
 | `proof` + `plates` | 4 | `export_page_proof_pdf` (page or one layer, optional hidden-but-printable layers, state restored), `render_plates` (Ghostscript films per plate: coverage, bboxes, registration-only, object attribution, predicted vs rendered, containment/choke check), `simulate_overprints`, `get_print_separation_settings` |
 | `layers` | 5 | Create, query, assign, show/hide, lock layers |
