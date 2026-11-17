@@ -1,7 +1,6 @@
 """图形操作工具 — 创建/查找/修改形状，布尔运算，导入素材，对齐/分布/层级/旋转/缩放"""
 
 from core.connection import get_connection
-from core.drawing import CDR_BITMAP_SHAPE, CDR_CURVE_SHAPE, CDR_GROUP_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE
 from core.models import ToolResult
 from core.targets import call_on_active
 
@@ -318,27 +317,6 @@ def group_shapes(document_path: str, shape_ids: str) -> ToolResult:
     if result["success"]:
         return ToolResult.ok(f"已组合 {result['result']['member_count']} 个形状", **result["result"])
     return ToolResult.fail(result.get("error", "组合失败"))
-
-
-def find_shape_by_name(name: str, document_path: str = "") -> ToolResult:
-    """按名称查找形状。返回形状的 ID、类型、尺寸等。
-
-    Reads the active document.
-    """
-    conn = get_connection()
-
-    def _find():
-        shape = _find_shape(name)
-        if shape is None:
-            return {"found": False, "name": name}
-        return {"found": True, **_shape_info(shape), "shape_id": _static_id(shape)}
-
-    result = call_on_active(conn, document_path, _find, read_only=True)
-    if result["success"]:
-        if result["result"]["found"]:
-            return ToolResult.ok(f"找到形状: {name}", **result["result"])
-        return ToolResult.ok(f"未找到形状: {name}", **result["result"])
-    return ToolResult.fail(result.get("error", "查找形状失败"))
 
 
 # ========== P0 排版必需品 ==========
@@ -700,89 +678,6 @@ def scale_shape(document_path: str, shape_id: str, scale_x: float, scale_y: floa
 
 
 # ========== P1 增强工具 ==========
-
-
-def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = "", document_path: str = "") -> ToolResult:
-    """按条件选择形状并返回匹配的形状列表。
-    by_type: rectangle/ellipse/curve/text/bitmap/group 等
-    by_layer: 图层名称
-    by_name_pattern: 名称包含此字符串的形状
-
-    不修改 CorelDRAW 中的实际选中状态，只返回匹配列表供其他工具使用。
-
-    Reads the active document.
-    """
-    conn = get_connection()
-
-    _TYPE_MAP = {
-        "rectangle": 1, "ellipse": 2, "curve": CDR_CURVE_SHAPE, "text": CDR_TEXT_SHAPE,
-        "bitmap": CDR_BITMAP_SHAPE, "group": CDR_GROUP_SHAPE, "line": 1, "polygon": CDR_POLYGON_SHAPE,
-    }
-
-    def _select():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        matched = []
-
-        for s in page.Shapes:
-            # 按图层过滤
-            if by_layer:
-                try:
-                    if s.Layer.Name != by_layer:
-                        continue
-                except Exception:
-                    continue
-
-            # 按类型过滤
-            if by_type:
-                type_lower = by_type.lower()
-                expected = _TYPE_MAP.get(type_lower, -1)
-                try:
-                    if expected >= 0 and s.Type != expected:
-                        continue
-                except Exception:
-                    continue
-
-            # 按名称模式过滤
-            if by_name_pattern:
-                try:
-                    name = s.Name or ""
-                    if by_name_pattern.lower() not in name.lower():
-                        continue
-                except Exception:
-                    continue
-
-            # 提取形状信息
-            info = _shape_info(s)
-            info["shape_id"] = ""
-            try:
-                info["shape_id"] = str(s.StaticID)
-            except Exception:
-                pass
-            try:
-                info["layer"] = s.Layer.Name
-            except Exception:
-                info["layer"] = ""
-            matched.append(info)
-
-        return {"count": len(matched), "shapes": matched, "criteria": {
-            "by_type": by_type, "by_layer": by_layer, "by_name_pattern": by_name_pattern,
-        }}
-
-    result = call_on_active(conn, document_path, _select, read_only=True)
-    if result["success"]:
-        r = result["result"]
-        criteria_parts = []
-        if by_type:
-            criteria_parts.append(f"类型={by_type}")
-        if by_layer:
-            criteria_parts.append(f"图层={by_layer}")
-        if by_name_pattern:
-            criteria_parts.append(f"名称包含'{by_name_pattern}'")
-        return ToolResult.ok(f"找到 {r['count']} 个匹配形状 ({', '.join(criteria_parts)})", **r)
-    return ToolResult.fail(result.get("error", "选择形状失败"))
 
 
 def powerclip(document_path: str, content_shape_id: str, container_shape_id: str) -> ToolResult:

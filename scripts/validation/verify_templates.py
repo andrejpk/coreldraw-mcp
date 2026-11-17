@@ -168,8 +168,8 @@ def verify(template):
         record = next((x for x in r.get("shapes", []) if x["shape_id"] == op_both), {})
         res["overprint_op_both"] = {k: record.get(k) for k in ("overprint_fill", "overprint_outline")}
     if template["file"] in ("text_runs.cdr", "structure.cdr"):
-        r = tool("list_all_text_shapes", page_index=1, document_path=path)
-        res["list_all_text_shapes"] = r.get("count", len(r.get("shapes", r.get("text_shapes", [])) or []))
+        r = tool("find_shapes", document_path=path, pages=[1], filters={"type": "text"})
+        res["text_shapes"] = r.get("count")
     if template["file"] in ("colors.cdr", "screen_job.cdr"):
         r = tool("get_ink_inventory", document_path=path)
         res["get_ink_inventory"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
@@ -179,8 +179,8 @@ def verify(template):
         pdf = ntpath.join(COPIES, "screen_job_proof.pdf")
         r = tool("export_page_proof_pdf", document_path=path, page_index=1, output_path=pdf)
         res["proof_pdf"] = {k: v for k, v in r.items() if k != "_seconds"}
-    r = tool("find_shape_by_name", name=template["shapes"][0]["name"], document_path=path) if template["shapes"] else {}
-    res["find_shape_by_name"] = {k: v for k, v in r.items() if k != "_seconds"} if r else None
+    r = tool("find_shapes", document_path=path, filters={"name": template["shapes"][0]["name"]})         if template["shapes"] else {}
+    res["find_by_name"] = {k: v for k, v in r.items() if k != "_seconds"} if r else None
     return res
 
 

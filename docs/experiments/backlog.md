@@ -4,7 +4,7 @@ Integration branch: `claude/experiments-integration` (cut from `claude/productio
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
 Budget: 20 child-agent cycles. Used: 8 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11).
 
-Current: 88 tools, ~22.4k tokens, 26 ruff errors, acceptance 229/229 + failure 6/6.
+Current: 85 tools, ~22.4k tokens, 25 ruff errors, acceptance 296/296 + failure 6/6.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
 Status values: **backlog**, **in progress**, **completed: success | partial | failure**, **dropped**.

@@ -1,6 +1,7 @@
 r"""Acceptance tests through the running MCP server: E08 document management, the 2026-11-17 production
-follow-up, the E17a structure cache, the E03 ink inventory, the E02+E05 color editing tools and E10 plate
-feedback (render_plates, merged export_page_proof_pdf, simulate_overprints).
+follow-up, the E17a structure cache, the E03 ink inventory, the E02+E05 color editing tools, E10 plate
+feedback (render_plates, merged export_page_proof_pdf, simulate_overprints) and E04+E11 find_shapes (filters,
+artifact presets, paging, selection, the named-shape cache fingerprint).
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -133,7 +134,7 @@ for name, args in (
     ("check_dimensions", {"document_path": A, "expected_width": 215.9, "expected_height": 279.4}),
     ("align_shapes", {"document_path": A, "shape_ids": str(rect), "alignment": "left", "reference": "page"}),
     ("export_png", {"document_path": A, "path": FX + r"\e08_unit.png", "dpi": 72}),
-    ("list_all_text_shapes", {"document_path": A, "page_index": 1}),
+    ("find_shapes", {"document_path": A, "pages": [1], "filters": {"type": "text"}}),
 ):
     r = call(name, **args)
     check(f"unit: {name} succeeds and leaves the document in inches", r["success"] and com_unit(A) == 1,
@@ -450,8 +451,9 @@ r = call("delete_shape_by_id", document_path=ST, page_index=1, shape_id=dup)
 inv = mcp_inventory(ST)
 check("cache, MCP edit: a shape deleted through the server disappears", r["success"] and dup not in ids(inv)
       and inv == truth(ST), r.get("error"))
-r = call("list_all_text_shapes", document_path=ST, page_index=1)
-check("text list: batched listing reads the structure fixture", r["success"], r.get("error"))
+r = call("find_shapes", document_path=ST, pages=[1], filters={"type": "text"})
+check("text list: find_shapes lists the structure fixture's text (PowerClip content included)",
+      r["success"] and r["data"]["count"] >= 1, r.get("error") or r["data"]["count"])
 
 # Status while a tool runs: get_coreldraw_status answers at once and names the running tool.
 holder, polls = {}, []
@@ -1032,6 +1034,242 @@ check("catalog: render_plates and simulate_overprints added; layer proof and ove
       {"render_plates", "simulate_overprints", "export_page_proof_pdf"} <= listed10
       and not {"export_layer_proof_pdf", "get_simulate_overprints", "set_simulate_overprints"} & listed10)
 for target in (SJ, KN10, INKS):
+    r = call("close_document", document_path=target, discard_changes=True)
+    check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
+# 8. find_shapes: filters, artifact presets, paging, selection, cache fingerprint (E04+E11) -------------------
+FD, KN4, ART4 = FX + r"\finds.cdr", FX + r"\e04_knights.cdr", FX + r"\e04_artifacts.cdr"
+Path(FD).unlink(missing_ok=True)
+built = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "e04" / "build_finds.py"), FX],
+                       capture_output=True, text=True, check=False)
+F = json.loads(built.stdout) if built.returncode == 0 and Path(FD).is_file() else {"ids": {}, "expected": {}}
+check("finds: fixture built", bool(F["ids"]), built.stdout[-300:] + built.stderr[-300:])
+shutil.copyfile(SAMPLES / "Knights Striped HEad.cdr", KN4)
+shutil.copyfile(TEMPLATES / "artifacts.cdr", ART4)
+for target in (FD, KN4, ART4):
+    r = call("open_document", path=target, activate=False)
+    check(f"find setup: open {Path(target).name}", r["success"], r.get("error"))
+FID = F["ids"]
+
+
+def found(preset=None, path=FD, **args):
+    """{name (finds.cdr; PowerClip contents get new IDs on reopen) or ID: reason} of every match."""
+    r = call("find_shapes", document_path=path, preset=preset, limit=1000, **args)
+    assert r["success"], r
+    return {x.get("name", x["id"]) if path == FD else x["id"]: x["reason"] for x in r["data"]["shapes"]}, r
+
+
+seeded, flagged = set(), set()
+for preset, expected in F["expected"].items():
+    got, r = found(preset)
+    seeded |= set(expected)
+    flagged |= set(got)
+    check(f"finds preset {preset}: every seeded artifact with its reason, nothing else", got == expected,
+          {"missing": {k: v for k, v in expected.items() if got.get(k) != v},
+           "extra": {k: v for k, v in got.items() if k not in expected}, "s": r["_seconds"]})
+check("finds: no clean object is flagged by any preset (No Print and Locked layers included)", flagged <= seeded,
+      sorted(flagged - seeded))
+
+# artifacts.cdr (E01 T3: audit_manifest.py found 7 of 9): every seeded artifact by the right preset.
+ART_EXPECTED = {"4": ("zero_size", "zero_size"), "5": ("zero_size", "zero_area"),
+                "6": ("invisible", "no_fill_no_outline"), "8": ("stacked_duplicates", "stacked_duplicate"),
+                "10": ("off_page", "off_page"), "11": ("off_page", "crosses_page_edge"), "12": ("hairline", "hairline"),
+                "13": ("tiny", "tiny")}
+hits = {}
+for preset in ("zero_size", "invisible", "stacked_duplicates", "off_page", "hairline", "empty_text", "tiny",
+               "hidden_printable_content", "registration_on_art"):
+    got, _ = found(preset, path=ART4)
+    for shape_id, reason in got.items():
+        hits.setdefault(shape_id, set()).add((preset, reason))
+check("artifacts.cdr: all 9 seeded targets found by the right preset (8 is the copy of 7), nothing else",
+      all(want in hits.get(shape_id, set()) for shape_id, want in ART_EXPECTED.items()) and set(hits) <= set(ART_EXPECTED),
+      hits)
+r = call("find_shapes", document_path=ART4, preset="stacked_duplicates")
+check("artifacts.cdr: the duplicate names its original", r["success"] and r["data"]["shapes"][0]["duplicate_of"] == "7")
+
+
+def names_of(**args):
+    got, r = found(**args)
+    return set(got), r
+
+
+got, r = names_of(filters={"name": "rect_186"})
+check("filters: exact name, bounds [left, bottom, right, top] in inches", got == {"rect_186"}
+      and r["data"]["shapes"][0]["bounds"] == [1, 8, 3, 10] and r["data"]["document_unit"] == "in", r["data"]["shapes"])
+got, _ = names_of(filters={"name": "logo_part_*"})
+check("filters: glob name finds nested shapes", got == {"logo_part_1", "logo_part_2"}, got)
+got, _ = names_of(filters={"name": "*BOUNDS*"})
+check("filters: glob is a case-insensitive substring", got == {"same_bounds_186", "same_bounds_300"}, got)
+got, r = names_of(pages=[1], filters={"type": "text"})
+check("filters: type text lists every text with a preview (replaces list_all_text_shapes)",
+      got == {"text_art", "label_ink", "label_reg", "blank_text", "dup_text_a", "dup_text_b"}
+      and {x["text"] for x in r["data"]["shapes"]} >= {"ART", "DUP", "   "}, got)
+got, _ = names_of(filters={"text": "dup"})
+check("filters: text substring", got == {"dup_text_a", "dup_text_b"}, got)
+got, r = names_of(filters={"color": "PANTONE Trans. White", "color_part": "outline"})
+check("filters: Trans. White outline found, with the matched part",
+      got == {"trans_white_outline"} and r["data"]["shapes"][0]["color_parts"] == ["outline"], got)
+got, _ = names_of(filters={"color": "Trans. White", "color_part": "fill"})
+check("filters: Trans. White as a fill: none (outline only)", got == set(), got)
+got, _ = names_of(pages=[1], filters={"color": "registration"})
+check("filters: registration color on fills, outlines and text", got == {"reg_mark", "label_reg", "reg_on_art"}, got)
+got, _ = names_of(pages=[1], layers=["Art"], filters={"type": "rectangle", "color": "186 C", "color_part": "fill",
+                                                      "depth": [0, 0]})
+check("filters: type + color without PANTONE prefix + depth + layer combine (AND)",
+      got == {"rect_186", "same_bounds_186", "trans_white_outline", "hidden_186", "speck"}, got)
+got, _ = names_of(pages=[1], filters={"outline_width": [0.5, 1.5]}, unit="pt")
+check("filters: outline width range in pt", got == {"line_1pt", "trans_white_outline", "clip_box", "reg_mark",
+                                                    "point_line", "np_point_line"}, got)
+got, _ = names_of(pages=[1], filters={"size": [None, 0.01], "type": "rectangle"})
+check("filters: size (larger side) in the document unit", got == {"speck"} | {f"dot_{k}" for k in range(25)}, got)
+got, _ = names_of(pages=[1], filters={"area": [3.9, 4.1]})
+check("filters: bbox area (2 x 2 in)", got == {"rect_186", "ellipse_outline_300"}, got)
+got, _ = names_of(pages=[1], filters={"intersects": [2.9, 9.9, 3.1, 10.1]})
+check("filters: bounds intersect a rectangle", got == {"rect_186", "reg_on_art"}, got)
+got, _ = names_of(pages=[1], filters={"inside": [0.9, 4.9, 2.1, 6.1]})
+check("filters: bounds inside a rectangle", got == {"tri_left", "tri_mirror", "dup_tri"}, got)
+got, _ = names_of(pages=[2], filters={"on_page": False})
+got2, _ = names_of(pages=[2], filters={"on_page": "crossing"})
+check("filters: on_page false / crossing", got == {"off_186"} and got2 == {"edge_186"}, (got, got2))
+got, _ = names_of(pages=[1], filters={"printable": False})
+check("filters: printable false (No Print layer)", got == {"np_no_paint", "np_point_line"}, got)
+got, _ = names_of(pages=[1], filters={"visible": False})
+check("filters: visible false (hidden object, hidden layer)", got == {"hidden_186", "hidden_print_300"}, got)
+got, _ = names_of(pages=[1], filters={"locked": True})
+check("filters: locked layer", got == {"locked_186"}, got)
+got, _ = names_of(pages=[1], filters={"powerclip": "content"})
+got2, _ = names_of(pages=[1], filters={"powerclip": "container"})
+check("filters: PowerClip content / container", got == {"clip_inside", "clip_outside"} and got2 == {"clip_box"},
+      (got, got2))
+got, r = names_of(filters={"ids": [FID["rect_186"], "999999"]})
+check("filters: exact IDs, missing IDs reported", got == {"rect_186"} and r["data"]["missing_ids"] == ["999999"],
+      r["data"].get("missing_ids"))
+got, _ = names_of(pages=[1], cql="$item.Outline.Width > 0.02")
+check("cql: read-only condition over $item", got == {"ellipse_outline_300"}, got)
+for bad, label in (("$item.Bogus > 1", "unknown property"), ("$item.Name = ", "syntax error"),
+                   ("$item.Delete", "method call"), ("@com.Application.Documents.Count > 0", "Application")):
+    r = call("find_shapes", document_path=FD, pages=[1], cql=bad)
+    check(f"cql: {label} refused with a message", not r["success"] and r["error"], r.get("error"))
+got, _ = names_of(pages=[1], filters={"type": "text"})
+check("cql: the document is unchanged after the refused queries", len(got) == 6 and not dirty(FD), got)
+for args, label in (({"filters": {"colour": "x"}}, "unknown filter key"), ({"filters": {"color": "CMYK 0/0"}}, "bad color"),
+                    ({"filters": {"size": [1]}}, "bad range"), ({"preset": "zero_size", "threshold": 1}, "threshold "
+                     "outside hairline/tiny"), ({"pages": [3]}, "page out of range"), ({"layers": ["Nope"]}, "unknown layer"),
+                    ({"limit": 0}, "limit 0")):
+    r = call("find_shapes", document_path=FD, **args)
+    check(f"find_shapes: {label} refused", not r["success"], r.get("error"))
+got, _ = names_of(preset="tiny", threshold=0.001)
+got2, _ = names_of(preset="hairline", threshold=0.05, unit="pt")
+check("presets: threshold in the given unit (tiny 0.001 in, hairline 0.05 pt) narrows the result",
+      got == set() and got2 == set(), (got, got2))
+got, _ = names_of(preset="zero_size", filters={"printable": False})
+check("presets: filters.printable=false looks at non-printing layers", got == {"np_point_line"}, got)
+
+# Paging with a continuation; later pages come from the cached result.
+pages_out, offset, seconds = [], 0, []
+while offset is not None:
+    r = call("find_shapes", document_path=FD, preset="tiny", limit=10, offset=offset)
+    pages_out += r["data"]["shapes"]
+    seconds.append(r["_seconds"])
+    offset = r["data"]["next_offset"]
+full = call("find_shapes", document_path=FD, preset="tiny", limit=1000)
+check("paging: limit-10 pages join to the full result; counts and cluster summary",
+      pages_out == full["data"]["shapes"] and full["data"]["count"] == 26
+      and full["data"]["counts"] == {"tiny": 1, "tiny_in_cluster": 25}
+      and full["data"]["summary"]["tiny_clusters"][0]["parent_id"] == FID["dots"],
+      (len(pages_out), full["data"]["counts"], seconds))
+inv = call("get_ink_inventory", document_path=FD, pages=[1])
+tiny_warning = next((w for w in inv["data"]["pages"][0]["warnings"] if w["code"] == "tiny_with_ink"), {})
+check("inventory: tiny objects summarized (isolated vs clusters); speck_with_ink gone",
+      tiny_warning.get("count") == 26 and tiny_warning.get("isolated") == 1
+      and tiny_warning.get("clusters") == [{"parent_id": FID["dots"], "count": 25}]
+      and tiny_warning.get("ids") == [FID["speck"]]
+      and not any(w["code"] == "speck_with_ink" for w in inv["data"]["pages"][0]["warnings"]), tiny_warning)
+
+# Knights page 1: the 23 off-page RVW-BK01A objects (E01: the blank film).
+r = call("find_shapes", document_path=KN4, pages=[1], preset="off_page", limit=1000)
+rvw = call("find_shapes", document_path=KN4, pages=[1], preset="off_page", filters={"color": "RVW-BK01A"}, limit=1000)
+check("Knights p1 off_page: 25 objects, 23 of them carry RVW-BK01A", r["success"]
+      and r["data"]["counts"] == {"off_page": 25} and rvw["data"]["count"] == 23,
+      (r["data"].get("counts"), rvw["data"].get("count")))
+r = call("find_shapes", document_path=KN4, pages=[1], preset="stacked_duplicates", limit=1000)
+check("Knights p1 stacked_duplicates: copies name their bottom original",
+      r["success"] and r["data"]["count"] >= 10 and all(x["duplicate_of"] for x in r["data"]["shapes"]),
+      r["data"].get("counts"))
+
+# Selection: select=True makes the matches the UI selection (replaces select_shapes_by_id).
+r = call("find_shapes", document_path=FD, pages=[1], preset="stacked_duplicates", select=True)
+ui = call("get_ui_selection", document_path=FD, page_index=1)
+check("select: duplicates selected and read back", r["success"] and r["data"]["selected_count"] == 2
+      and sorted(ui["data"]["shape_ids"]) == sorted([FID["dup_text_b"], FID["dup_tri"]]),
+      (r.get("error"), ui.get("data")))
+r = call("find_shapes", document_path=FD, filters={"ids": [FID["rect_186"], FID["text_art"]]}, pages=[1], select=True)
+ui = call("get_ui_selection", document_path=FD, page_index=1)
+check("select: exact IDs (the select_shapes_by_id case)", r["success"]
+      and sorted(ui["data"]["shape_ids"]) == sorted([FID["rect_186"], FID["text_art"]]), ui.get("data"))
+r = call("find_shapes", document_path=FD, filters={"ids": [FID["rect_186"], "999999"]}, pages=[1], select=True)
+ui2 = call("get_ui_selection", document_path=FD, page_index=1)
+check("select: a missing ID refuses and keeps the selection", not r["success"]
+      and ui2["data"]["shape_ids"] == ui["data"]["shape_ids"], r.get("error"))
+r = call("find_shapes", document_path=FD, preset="off_page", select=True)
+check("select: more than one page refused", not r["success"] and "one page" in r["error"], r.get("error"))
+r = call("find_shapes", document_path=FD, pages=[2], preset="off_page", select=True)
+ui = call("get_ui_selection", document_path=FD, page_index=2)
+check("select: activates the page and selects there", r["success"]
+      and sorted(ui["data"]["shape_ids"]) == sorted([FID["edge_186"], FID["off_186"]]),
+      (r.get("error"), ui.get("data") or ui.get("error")))
+call("edit_pages", document_path=FD, action="activate", page_index=1)
+
+# An MCP edit (generation) is seen by the next query.
+r = call("set_overprint", document_path=FD, page_index=1, shape_ids=[FID["rect_186"]], fill=True)
+got, _ = names_of(pages=[1], filters={"overprint_fill": True})
+check("filters: overprint_fill after an MCP edit", r["success"] and got == {"rect_186"}, (r.get("error"), got))
+
+
+# Cache fingerprint (E17a blind spot): out-of-band COM edits that add NAMED nested shapes.
+def fd_edit(func):
+    def run():
+        doc = doc_of(FD)
+        art = next(layer for layer in doc.Pages(1).Layers if layer.Name == "Art")
+        named = {s.Name: s for s, _ in walk_shapes(art.Shapes) if s.Name}
+        return func(art, named)
+    return direct(run)
+
+
+def swap_named(art, named):
+    """Delete a named group member and add a named rectangle to the same group: every count stays the same."""
+    named["logo_base"].Delete()
+    new = art.CreateRectangle2(6, 5.9, 0.2, 0.2)
+    new.Name = "e04_named_in_group"
+    new.OrderFrontOf(named["logo_inner"])
+    return str(new.StaticID), str(new.Evaluate("@com.ParentGroup.StaticID"))
+
+
+def named_into_clip(art, named):
+    new = art.CreateRectangle2(3.2, 5.2, 0.2, 0.2)
+    new.Name = "e04_named_in_clip"
+    new.AddToPowerClip(named["same_bounds_300"], 0)
+    return str(new.StaticID)
+
+
+warm, _ = names_of(pages=[1], filters={"name": "e04_*"})  # walks and caches page 1
+new_id, parent = fd_edit(swap_named)
+got, r = names_of(pages=[1], filters={"name": "e04_*"})
+everything, _ = names_of(pages=[1])
+check("cache, out-of-band: a named shape swapped into a group (all counts unchanged) is found, the deleted one gone",
+      warm == set() and parent == FID["group_logo"] and got == {"e04_named_in_group"}
+      and "logo_base" not in everything, (parent, got))
+new_clip = fd_edit(named_into_clip)
+got, r = names_of(pages=[1], filters={"powerclip": "content"})
+got2, _ = names_of(pages=[1], filters={"powerclip": "container"})
+check("cache, out-of-band: a named shape put into a new PowerClip is found, its container reported",
+      "e04_named_in_clip" in got and "same_bounds_300" in got2, (got, got2))
+
+listed4 = {tool.name for tool in asyncio.run(_catalog())}
+check("catalog: find_shapes added; find_shape_by_name, select_shapes, list_all_text_shapes, select_shapes_by_id "
+      "removed; get_ui_selection kept", {"find_shapes", "get_ui_selection"} <= listed4 and not {
+          "find_shape_by_name", "select_shapes", "list_all_text_shapes", "select_shapes_by_id"} & listed4)
+for target in (FD, KN4, ART4):
     r = call("close_document", document_path=target, discard_changes=True)
     check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
 

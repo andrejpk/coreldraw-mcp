@@ -28,7 +28,8 @@ _TEXT_CHUNK = 200  # characters per CQL array; each character costs about 5 ms i
 _MAX_MIXED_CHARACTERS = 4000  # per text shape; longer mixed-color texts are reported as unread
 _BATCH = 2000  # entries per read; the time budget is checked between reads
 _RESERVE_SECONDS = 15.0
-_SPECK_MM = 0.1
+TINY_MM = 0.1  # find_shapes preset tiny uses the same default
+TINY_CLUSTER = 20  # tiny objects under one parent that are fine detail rather than stray specks
 _SIMILAR_DELTA_E = 12.0
 _ZERO_MM = 0.001  # CorelDRAW reports a zero-length line as about 0.0004 mm
 
@@ -165,7 +166,8 @@ class _Page:
         self.unit = unit
         self.bounds = (page.LeftX, page.BottomY, page.RightX, page.TopY)
         known = unit in ("in", "mm", "cm", "pt")
-        self.speck = convert(_SPECK_MM, "mm", unit) if known else None
+        self.speck = convert(TINY_MM, "mm", unit) if known else None
+        self.tiny = []  # (shape ID, parent ID)
         self.zero = convert(_ZERO_MM, "mm", unit) if known else 0.0
         self.tint_inks = defaultdict(set)
 
@@ -436,7 +438,7 @@ def _artifact_warnings(page_data, entry, bounds, paint, uses, shape, state):
         if width <= page_data.zero and height <= page_data.zero:
             page_data.warn("zero_size_with_ink", entry.shape_id)
         elif page_data.speck is not None and max(width, height) < page_data.speck:
-            page_data.warn("speck_with_ink", entry.shape_id)
+            page_data.tiny.append((entry.shape_id, entry.parent_id))
         elif min(width, height) <= page_data.zero and any(part in ("fill", "fountain_stop", "pattern") for part in inked):
             page_data.warn("fill_on_zero_area_shape", entry.shape_id)
 
@@ -474,7 +476,8 @@ _WARNINGS = {
     "spot_palette_mismatch": "One spot name taken from more than one palette",
     "zero_width_outline_with_ink": "Printable outlines of zero width that still carry an ink",
     "zero_size_with_ink": "Printable zero-size objects that still carry an ink",
-    "speck_with_ink": f"Printable objects smaller than {_SPECK_MM} mm that carry an ink",
+    "tiny_with_ink": f"Printable inked objects smaller than {TINY_MM} mm. Isolated ones (under {TINY_CLUSTER} below one "
+                     "parent) are likely specks; clusters are fine detail. find_shapes(preset='tiny') lists them",
     "fill_on_zero_area_shape": "Fills on printable shapes with zero width or height",
     "ink_on_whitespace_text": "Ink only on whitespace characters (prints nothing)",
     "transparency_with_ink": "Printable objects with transparency (output blends or halftones the ink)",
@@ -551,15 +554,30 @@ def _finish(page_data, include_ids, printable_only):
             warning.setdefault("inks", []).append(ink["ink"])
             for shape_id in sorted(ink["objects"]["off_page"], key=int):
                 page_data.warn("ink_only_off_page", shape_id)
+    _tiny_warning(page_data)
     warnings = []
     for code, entry in page_data.warnings.items():
         warning = {"code": code, "message": _WARNINGS[code], "count": entry["count"]}
-        if entry.get("inks"):
-            warning["inks"] = entry["inks"]
+        for extra in ("inks", "isolated", "clusters"):
+            if extra in entry:
+                warning[extra] = entry[extra]
         if include_ids and entry["ids"]:
             warning["ids"] = entry["ids"]
         warnings.append(warning)
     return inks, plates, warnings
+
+
+def _tiny_warning(page_data):
+    """One summary for tiny inked objects: isolated specks first, clusters (fine detail) by parent."""
+    if not page_data.tiny:
+        return
+    per_parent = Counter(parent for _, parent in page_data.tiny)
+    isolated = [shape_id for shape_id, parent in page_data.tiny if per_parent[parent] < TINY_CLUSTER]
+    warning = page_data.warnings["tiny_with_ink"]
+    warning.update(count=len(page_data.tiny), isolated=len(isolated),
+                   clusters=[{"parent_id": parent, "count": count} for parent, count in per_parent.most_common(3)
+                             if count >= TINY_CLUSTER])
+    warning["ids"] = isolated[:page_data.max_ids]
 
 
 def _spot_warnings(page_data):
@@ -620,7 +638,7 @@ def get_ink_inventory(
     registration_only (plates that only registration marks), estimated_only, hidden_printable_only,
     blank_spot_plates (spots the page names but nothing marks: off page, clipped, whitespace). Warnings flag
     near-duplicate spots, tints, hidden-but-printable inks, off-page-only inks, zero-width or zero-size
-    inked objects, specks, whitespace-only text runs, transparency, mixed fountains and process bitmaps.
+    inked objects, tiny objects (isolated vs clusters), whitespace-only text runs, transparency, mixed fountains and process bitmaps.
     Printable_only drops inks with no printing object. A long document may return next_pages: call
     again with pages=next_pages.
     """

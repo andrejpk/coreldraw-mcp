@@ -42,7 +42,6 @@ from tools.text import (
     convert_text_to_curves,
 )
 from tools.shapes import (
-    find_shape_by_name,
     create_rectangle,
     create_ellipse,
     align_shapes,
@@ -52,13 +51,13 @@ from tools.shapes import (
     rotate_shape,
     ungroup_shapes,
     scale_shape,
-    select_shapes,
     powerclip,
     group_shapes,
 )
 from tools.export import export_pdf, export_dxf, export_preview_png, export_png, export_jpeg
 from tools.preflight import check_dimensions, check_text_overflow_all
 from tools.inks import get_ink_inventory
+from tools.find import find_shapes
 from tools.colors import set_fill, set_transparency
 from tools.layers import create_layer, assign_to_layer, get_layers
 
@@ -374,7 +373,7 @@ def test_step9_shapes_p0(tr: TestResult):
         tr.skip("群组/取消群组测试", "群组创建失败，跳过取消群组")
 
     # 测试形状选择查询
-    result = select_shapes(by_type="rectangle")
+    result = find_shapes(DOC.path, filters={"type": "rectangle"})
     tr.step(f"选择所有矩形 (by_type=rectangle)", result)
 
     # 测试删除（删除第三个矩形 rect_c）
@@ -383,8 +382,8 @@ def test_step9_shapes_p0(tr: TestResult):
         tr.step(f"删除 rect_c {new_ids[2][:8]}", result)
 
     # 验证删除
-    result_find = find_shape_by_name("rect_c")
-    if result_find.success and not result_find.data.get("found", True):
+    result_find = find_shapes(DOC.path, filters={"name": "rect_c"})
+    if result_find.success and result_find.data["count"] == 0:
         tr.step("验证删除: rect_c 已不存在", ToolResult.ok("OK"))
     else:
         tr.step("验证删除: rect_c", ToolResult.ok("已删除或无法确认"))

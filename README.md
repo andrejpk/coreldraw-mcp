@@ -53,8 +53,9 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 
 | Module | Tools | Functionality |
 |--------|-------|---------------|
-| `document` | 8 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), text listing, guidelines. Every tool takes an exact `document_path`; units are never changed |
-| `shapes` | 11 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops |
+| `document` | 7 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), guidelines. Every tool takes an exact `document_path`; units are never changed |
+| `shapes` | 18 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops, arrange, group |
+| `find` | 1 | `find_shapes`: combinable filters (type, name glob, color spec on fill/outline/text runs, sizes, bounds, on/off page, layer flags, text, effects, PowerClips, depth, overprint, read-only CQL) and cleanup presets (zero size, invisible, stacked duplicates, off page, hairline, empty text, tiny, hidden-but-printable, registration on art); paged records, counts, optional UI selection |
 | `text` | 5 | Text replacement, style, overflow detection, convert to curves |
 | `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
 | `proof` + `plates` | 4 | `export_page_proof_pdf` (page or one layer, optional hidden-but-printable layers, state restored), `render_plates` (Ghostscript films per plate: coverage, bboxes, registration-only, object attribution, predicted vs rendered, containment/choke check), `simulate_overprints`, `get_print_separation_settings` |

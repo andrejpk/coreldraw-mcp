@@ -13,7 +13,7 @@ and a record that repeats the path for every property costs 10-15 ms. So this mo
   shape to ``$item`` so that its properties are read without repeating the path;
 * caches the walked structure between calls and validates it cheaply on every call.
 
-Cache API (used by ``inspect_shapes``, the exact-ID tools and ``list_all_text_shapes``):
+Cache API (used by ``inspect_shapes``, ``find_shapes``, ``get_ink_inventory`` and the exact-ID tools):
 
 ``page_layers(doc, page, layer_name=None, fresh=False) -> list[LayerView]``
     Every layer of ``page.AllLayers``, in order (or only the layers with that exact name), each with its
@@ -55,10 +55,13 @@ Validity. A cached page is reused only when all of these hold:
 * the bridge ``generation`` is unchanged: no operation that may edit a document ran through this server
   since the walk (every ``safe_call`` counts; reads use ``read_call``);
 * every layer has the same name and top-level shape count at the same position in ``page.AllLayers``;
-* the page's recursive shape count (``Page.Shapes.FindShapes`` with Recursive) is unchanged, and no shape on
-  it has a StaticID above the largest one walked (new shapes, including pasted, duplicated and newly grouped
-  ones, get new, higher IDs; an undone delete restores an old ID and changes the count);
-* every cached group path still holds the same group ID with the same child count;
+* every non-empty layer and every cached container (group, effect group, PowerClip) still has the same
+  container ID and child count, none of its children has a StaticID above the largest one walked (new
+  shapes, including pasted, duplicated and newly grouped ones, get new, higher IDs; an undone delete restores
+  an old ID and changes a count), and the same number of its children hold PowerClip contents (a new
+  PowerClip on a plain shape). One CQL call checks all of them with ``Shapes.toarray().filter(...)``, which
+  sees named and unnamed shapes alike (``Shapes.FindShapes`` matches the Name argument exactly, so an empty
+  name finds only unnamed shapes, and it never enters PowerClips);
 * every path read through ``read_entries`` or ``resolve_shapes`` still holds the cached StaticID.
 
 Together these catch edits made in the CorelDRAW UI or by another client, which bypass the server. Pages
@@ -68,7 +71,6 @@ Callers retry once with ``fresh=True`` after ``StaleStructureError``.
 
 from __future__ import annotations
 
-import sys
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import NamedTuple
@@ -76,11 +78,6 @@ from typing import NamedTuple
 from core.connection import get_connection
 from core.drawing import CDR_GROUP_SHAPE
 from core.targets import document_identity, normalize_path
-
-if sys.platform == "win32":
-    from pythoncom import Empty
-else:  # CorelDRAW automation is Windows only
-    Empty = None
 
 _NEXT = ".Next(0, false, false)"  # the next sibling in the same parent; null after the last
 _MAX_BLOCK_POWER = 8  # blocks of up to 256 siblings: ~m/2 Next steps per shape, one Item resolution per block
@@ -155,9 +152,9 @@ class LayerView:
 class _PageEntry:
     generation: int
     layers: list  # [(name, top-level count)]
-    recursive_count: int
     max_id: int
     structures: list  # LayerStructure per layer, in AllLayers order
+    checks: list | None  # (CQL, expected value) per container collection; None: too many to check, rewalk
 
 
 _cache: OrderedDict = OrderedDict()
@@ -381,33 +378,54 @@ def _master_only_views(page, state, layer_name):
     return views
 
 
-def _recursive_count(state):
-    return state.shapes.FindShapes(Empty, 0, True).Count
+def _collection_check(collection, owner, owner_id, count, newer_than, clip_holders):
+    """(CQL, expected value) for one shape collection: owner ID (0 for a layer), child count, children with an
+    ID above ``newer_than`` (new shapes), children holding PowerClip contents."""
+    items = f"{collection}.toarray()"
+    query = (f"array({owner}, {collection}.Count, {items}.filter($item.StaticID > {newer_than}).count(), "
+             f"{items}.filter($item.PowerClip.Shapes.Count > 0).count())")
+    return query, [owner_id, count, 0, clip_holders]
 
 
-def _newer_count(state, max_id):
-    return state.shapes.FindShapes(Empty, 0, True, f"@com.StaticID > {max_id}").Count
+def _fingerprint(tops, structures, max_id):
+    """Checks for every non-empty layer and every walked container, or None when there are too many containers
+    for a cheap check (verifying many groups one path at a time costs about as much as a walk)."""
+    containers = sum(len(structure.groups) for structure in structures)
+    if containers * 10 > max(1, sum(len(structure.entries) for structure in structures)):
+        return None
+    checks = []
+    for (ordinal, count), structure in zip(tops, structures, strict=True):
+        if not count:
+            continue
+        holds_clip = {path for path, _, _, clips in structure.groups if clips}
+        holders = {}  # (parent path, PowerClip collection?) -> children holding PowerClip contents
+        for entry in structure.entries:
+            if entry.path in holds_clip:
+                key = (entry.parent or (), entry.path[-1] < 0)
+                holders[key] = holders.get(key, 0) + 1
+        checks.append(_collection_check(f"@com.Page.AllLayers.Item({ordinal}).Shapes", "0", 0, count, max_id,
+                                        holders.get(((), False), 0)))
+        for path, shape_id, size, clips in structure.groups:
+            shape = query_path(path, ordinal)
+            for collection, children, clip in ((f"{shape}.Shapes", size, False),
+                                               (f"{shape}.PowerClip.Shapes", clips, True)):
+                if children:
+                    checks.append(_collection_check(collection, f"{shape}.StaticID", int(shape_id), children, max_id,
+                                                    holders.get((path, clip), 0)))
+    return checks
 
 
 def _still_valid(state, cached) -> bool:
-    if [(row[0], row[1]) for row in state.layers] != cached.layers:
+    if [(row[0], row[1]) for row in state.layers] != cached.layers or cached.checks is None:
         return False
-    if _recursive_count(state) != cached.recursive_count or _newer_count(state, cached.max_id):
-        return False
-    # Recursive counts (FindShapes with an empty name) see only unnamed shapes and no PowerClip contents, so the
-    # container check below is what catches nested edits among named shapes.
-    groups = [(ordinal, group) for ordinal, structure in enumerate(cached.structures, 1) for group in structure.groups]
-    if not groups:
+    if not cached.checks:
         return True
-    if len(groups) * 10 > sum(len(structure.entries) for structure in cached.structures):
-        return False  # verifying many groups one path at a time costs about as much as a walk
     try:
-        values = evaluate(state.anchor, [f"array({query_path(path, ordinal)}).convert({_GROUP_LEAF})"
-                                         for ordinal, (path, _, _, _) in groups])
+        values = evaluate(state.anchor, [query for query, _ in cached.checks])
     except Exception:
         return False  # a cached path no longer resolves
-    return all(value[0] and str(value[0][0]) == shape_id and value[0][1] == size and value[0][2] == clips
-               for value, (_, (_, shape_id, size, clips)) in zip(values, groups, strict=True))
+    return all([int(value[0] or 0), *(int(part or 0) for part in value[1:])] == expected
+               for value, (_, expected) in zip(values, cached.checks, strict=True))
 
 
 def page_layers(doc, page, layer_name: str | None = None, *, fresh: bool = False) -> list[LayerView]:
@@ -425,15 +443,15 @@ def page_layers(doc, page, layer_name: str | None = None, *, fresh: bool = False
         _cache.move_to_end(key)
     else:
         _cache.pop(key, None)
-        recursive = _recursive_count(state)
         tops = [(ordinal, row[1]) for ordinal, row in enumerate(state.layers, 1)]
         walked = _walk(state.anchor, tops)
         structures = [walked.get(ordinal) or LayerStructure([], []) for ordinal, _ in tops]
         max_id = max((int(entry.shape_id) for structure in structures for entry in structure.entries), default=0)
-        # Cache only a walk that no edit overlapped (counts and newest ID unchanged across it).
-        if _recursive_count(state) == recursive and not _newer_count(state, max_id):
-            _cache[key] = _PageEntry(generation, [(row[0], row[1]) for row in state.layers], recursive, max_id,
-                                     structures)
+        entry = _PageEntry(generation, [(row[0], row[1]) for row in state.layers], max_id, structures,
+                           _fingerprint(tops, structures, max_id))
+        # Cache only a walk that no edit overlapped: the page must still match what was walked.
+        if _still_valid(_page_state(page), entry):
+            _cache[key] = entry
             while len(_cache) > _MAX_PAGES:
                 _cache.popitem(last=False)
     return [LayerView(page, state.anchor, ordinal, row[0], row[2], row[3], row[4], structure, None, row[5])

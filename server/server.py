@@ -60,6 +60,7 @@ def register_tools():
         effects,
         engineering,
         export,
+        find,
         geometry,
         inks,
         inspection,
@@ -80,7 +81,6 @@ def register_tools():
     mcp.add_tool(document.save_document)
     mcp.add_tool(document.close_document)
     mcp.add_tool(document.edit_pages)
-    mcp.add_tool(document.list_all_text_shapes)
     mcp.add_tool(document.add_guideline)
 
     mcp.add_tool(shapes.create_rectangle)
@@ -93,7 +93,6 @@ def register_tools():
     mcp.add_tool(shapes.boolean_operation)
     mcp.add_tool(shapes.convert_to_curves)
     mcp.add_tool(shapes.group_shapes)
-    mcp.add_tool(shapes.find_shape_by_name)
     mcp.add_tool(shapes.align_shapes)
     mcp.add_tool(shapes.distribute_shapes)
     mcp.add_tool(shapes.set_z_order)
@@ -101,12 +100,11 @@ def register_tools():
     mcp.add_tool(shapes.rotate_shape)
     mcp.add_tool(shapes.ungroup_shapes)
     mcp.add_tool(shapes.scale_shape)
-    mcp.add_tool(shapes.select_shapes)
     mcp.add_tool(shapes.powerclip)
     mcp.add_tool(inspection.inspect_shapes)
     mcp.add_tool(Tool.from_function(inks.get_ink_inventory, annotations={"readOnlyHint": True}))
-    mcp.add_tool(inspection.get_ui_selection)
-    mcp.add_tool(inspection.select_shapes_by_id)
+    mcp.add_tool(find.find_shapes)
+    mcp.add_tool(Tool.from_function(inspection.get_ui_selection, annotations={"readOnlyHint": True}))
     mcp.add_tool(effects.inspect_contours)
     mcp.add_tool(effects.apply_contour)
     mcp.add_tool(effects.break_contour_apart)

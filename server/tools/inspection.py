@@ -24,7 +24,7 @@ from core.structure import (
 )
 from core.targets import resolve_document, resolve_page
 from core.units import unit_name
-from tools.shapes import _create_shape_range, _static_id
+from tools.shapes import _static_id
 
 _CDR_NO_FILL = 0
 _CDR_UNIFORM_FILL = 1
@@ -359,39 +359,27 @@ def inspect_shapes(
     return ToolResult.fail(result["error"])
 
 
-def _selection(document_path: str, page_index: int, shape_ids: list[str] | None = None) -> ToolResult:
+def get_ui_selection(document_path: str, page_index: int) -> ToolResult:
+    """Read exact shape IDs in the UI selection of an exact open document; page_index must be its active page.
+
+    To change the selection use find_shapes(..., select=True), for example with filters {"ids": [...]}.
+    """
     conn = get_connection()
 
-    def select():
-        # Changing the UI selection needs the document to be the active one; reading it does not.
-        doc, actual_path = resolve_document(conn.app, document_path, activate=shape_ids is not None)
+    def read():
+        doc, actual_path = resolve_document(conn.app, document_path)
         if doc.ActivePage.Index != page_index:
             raise ValueError(f"Page {page_index} must be the document's active page (edit_pages action=activate)")
-        if shape_ids is not None:
-            _create_shape_range(_exact_shapes(doc, doc.ActivePage, shape_ids)).CreateSelection()
         selection = doc.SelectionRange
         return {
             "document_path": actual_path, "page_index": page_index,
             "shape_ids": [_static_id(selection.Item(i)) for i in range(1, selection.Count + 1)],
         }
 
-    result = conn.safe_call(select) if shape_ids is not None else conn.read_call(select)
+    result = conn.read_call(read)
     if not result["success"]:
         return ToolResult.fail(result["error"])
-    data = result["result"]
-    if shape_ids is not None and set(data["shape_ids"]) != set(shape_ids):
-        return ToolResult(success=False, error="CorelDRAW selected a different set of shapes", data=data)
-    return ToolResult.ok(**data)
-
-
-def get_ui_selection(document_path: str, page_index: int) -> ToolResult:
-    """Read exact shape IDs in the UI selection of an exact open document; page_index must be its active page."""
-    return _selection(document_path, page_index)
-
-
-def select_shapes_by_id(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
-    """Replace the UI selection with exact StaticIDs; activates the document. page_index must be its active page."""
-    return _selection(document_path, page_index, shape_ids)
+    return ToolResult.ok(**result["result"])
 
 
 def _on_shape(document_path, page_index, shape_id, action, *, write=False) -> ToolResult:
