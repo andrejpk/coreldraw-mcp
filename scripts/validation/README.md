@@ -16,7 +16,6 @@ Run from `server/` with the repo venv against a running CorelDRAW 2022. They bui
 | `profile_cdr.py <out.json> <run dir> <file.cdr>...` | Read-only profile of document copies under a run folder (layers, counts, depth, colors, text, effects, PowerClips) |
 | `verify_templates.py <manifest> <copies dir> <out.json> [file...]` | Compare template copies against the manifest through the MCP server |
 | `close_run_docs.py <run dir>` | Close only documents saved under a run folder (`Dirty=False` first) |
-| `close_mine.py` | Close only fixture documents saved under a `scratchpad` path |
 | `catalog_size.py [out.json]` | Tool count and `list_tools` JSON size (schemas, descriptions, output schemas), overall and per module |
 | `audit_lib.py` | Logged MCP client for agent-eye audits: one session, any argument names, JSONL log of tool/args/seconds/bytes/errors; `python audit_lib.py <log>` summarizes per task |
 | `audit_manifest.py` | Client-side film manifest (spots by fill/outline/text run, process/registration sources, hidden-printable) and artifact heuristics over `inspect_shapes` inventories |

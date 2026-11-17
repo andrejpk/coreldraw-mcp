@@ -2,8 +2,9 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729, later merged 0d4f40a).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 3 (E00, E01, E08).
+Budget: 20 child-agent cycles. Used: 4 (E00, E01, E08, E17a).
 
+Current: 96 tools, ~21.7k tokens, 29 ruff errors, acceptance 84/84 + failure 4/4.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
 Status values: **backlog**, **in progress**, **completed: success | partial | failure**, **dropped**.
@@ -14,13 +15,14 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | --- | --- | --- | --- | --- |
 | E00 | Fixture/template library + fresh copies of 4 real sample files | completed: success | 8 templates + MANIFEST.json/md, deterministic rebuild; 4 sample copies profiled (55 to 18,813 objects); builder/profiler/verifier scripts. Found 10 tool shortcomings. [results](results/e00.md) | merged (d930bb2) |
 | E01 | Agent-eye usability audit on real sample copies, MCP only | completed: success | 381 MCP calls over 6 production tasks. Underbase build and mark move worked; save-as, spot recolor and spot outlines impossible; a page inventory on Good News took 68 calls / 746 s / 9.3 MB. 16 ranked problems, consolidation map 99 → ~35 core tools. [results](results/e01.md) | merged; `-dOverrideICC` render fix applied on integration (6fab173) |
+| E08 | Document management + exact-document targeting | completed: success | 99 → 96 tools. Added `list_documents`, `open_document`, `edit_pages`; removed `open_template`, `get_document_info`, `add_page`, `delete_page`, `set_page_size`, `switch_page`; `save_document` save-as fixed (E01 T6d: 1 call, 0 failures), `close_document` by exact path with dirty refusal. Shared `core/targets.py` + `core/units.py`; 11 forced-mm writes removed; 46 legacy edit tools require `document_path` (refuse on mismatch). Catalog 20.1k → 21.7k tokens (more params). Acceptance 84/84, failure 4/4, ruff 29. Finding: `Document.Undo` acts on the active document, so edits activate their target. [results](results/e08.md) | merged; removed unsafe `close_mine.py` |
 
 ## Queue (in run order, revised after E01)
 
 | Order | ID | Experiment | Status |
 | --- | --- | --- | --- |
-| 1 | E08 | Document management + exact-document targeting: `list_documents`, `open_document`/activate (no unit change; merge `open_template`), fixed `save_document` (SaveAs options, save-as copy), `close_document(document_path)`, `edit_pages`; remove all forced `Unit = mm` writes; shared document resolver used by every tool (fail when the active doc differs from `document_path`) | in progress |
-| 2 | E17a | Structure/ID cache + bridge timeout safety (absorbs E20): reuse page structure across paged `inspect_shapes` calls; resolve many IDs in one walk; batch text listing/runs; no read-only call may exceed the bridge timeout; status reports the running tool | backlog |
+| 1 | E08 | Document management + exact-document targeting: `list_documents`, `open_document`/activate (no unit change; merge `open_template`), fixed `save_document` (SaveAs options, save-as copy), `close_document(document_path)`, `edit_pages`; remove all forced `Unit = mm` writes; shared document resolver used by every tool (fail when the active doc differs from `document_path`) | completed: success |
+| 2 | E17a | Structure/ID cache + bridge timeout safety (absorbs E20): reuse page structure across paged `inspect_shapes` calls; resolve many IDs in one walk; batch text listing/runs; no read-only call may exceed the bridge timeout; status reports the running tool | in progress |
 | 3 | E03 | `get_ink_inventory`: per page and printable layer, fills/outlines/text runs/effects/PowerClip contents, spot type 25, off-page and hidden-printable splits, locked flags, IDs per ink; replaces `get_color_report`, both `check_rgb_colors`, plate list of `get_print_separation_settings`; `inspect_shapes` descends into PowerClips | backlog |
 | 4 | E02 | `set_fill` / `set_outline` / `set_overprint`: every color model, spot by palette name + tint, registration, none, fountain, from donor; spot outlines; widths with explicit units; verified read-back; removes ~9 tools | backlog |
 | 5 | E05 | `replace_color` across fills/outlines/text runs/contours; dry run; one undo step; `undo` tool | backlog |
