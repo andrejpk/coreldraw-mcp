@@ -20,6 +20,9 @@
 - [2026-04-27] [技术债] Token 消耗统计与成本追踪
 - [2026-04-27] [技术债] Python 64-bit 版本检查 — 启动时检测并提示（32-bit Python 会导致 COM 调用失败）
 - [2026-11-16] [生产反馈] [CorelDRAW tools for screen separation workflows](../../docs/requirements/2026-11-16-screen-separation-tools.md) — Prioritize recursive inspection, exact selection, and page-scoped layer controls, then contours and overprint. Proposed for review.
+- [2026-11-17] [VERIFY] `save_document` calls `Doc.SaveAs(path)` alone, which fails on new documents under dynamic COM; pass `App.CreateStructSaveAsOptions()`.
+- [2026-11-17] [VERIFY] `get_color_report` misses CorelDRAW 2022 spot colors (type 25) and scans only top-level shapes on the active page.
+- [2026-11-17] [自己] 20-cycle experiment loop to simplify and strengthen the MCP tool set (proposed session, not started).
 
 ## 已规划
 

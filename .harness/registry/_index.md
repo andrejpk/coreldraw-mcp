@@ -13,6 +13,8 @@
 
 ---
 
+[2026-11-17 01:30] DONE Production follow-up tools: text fill runs, order-preserving weld, single-layer proof, batched inspection (1,152 s → 15.6 s) on branch claude/production-followup-tools → sessions/2026-11-17-0130.md
+
 [2026-11-16 FIX] Codex launches the CorelDRAW bridge over stdio; explicit COM readiness, no replay of edits, cross-client serialization, and paged shape inspection → ../../README.md
 
 [2026-06-04 FIX] 新增英文 README，原中文版改为 README-CN，修正两处 License 行错写的 MIT → Apache 2.0
