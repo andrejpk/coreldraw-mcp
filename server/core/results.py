@@ -5,11 +5,16 @@ call itself also reports ``data.state``: ``busy`` or ``timeout`` (retry later or
 ``disconnected``, ``not_running`` or ``unavailable`` (CorelDRAW is not reachable), or ``tool_error`` (the request
 failed: fix it), plus the document and page the call targeted.
 
+On the wire (``CorelTool``) a failed ToolResult is an MCP error result (``isError: true``) that still carries the
+same structured content and text, so hosts flag the failure and clients that read ``structuredContent`` (or
+``success``) keep working.
+
 A successful result dict fails anyway, keeping its data, when the tool reports refused targets (nothing changed),
 ``verification_error`` (one message) or ``verification_errors`` (a list of read-back differences).
 """
 
 from core.models import ToolResult
+from fastmcp.tools.function_tool import FunctionTool
 
 
 def failure(result: dict, **context) -> ToolResult:
@@ -34,3 +39,13 @@ def respond(result: dict, message: str | None = None, **context) -> ToolResult:
             f"Read-back differs on {len(problems)} item(s) (see verification_errors); the edit is one undo "
             "step: call undo to revert it"))
     return ToolResult.ok(message, **data)
+
+
+class CorelTool(FunctionTool):
+    """A FunctionTool whose failed ToolResult (success false) is sent with MCP isError true, structured data kept."""
+
+    def convert_result(self, raw_value):
+        result = super().convert_result(raw_value)
+        if isinstance(raw_value, ToolResult) and not raw_value.success:
+            result.is_error = True
+        return result

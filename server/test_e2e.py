@@ -35,15 +35,11 @@ from tools.document import (
     edit_pages,
     add_guideline,
 )
-from tools.text import (
-    create_text_frame,
-    set_text_content,
-    check_text_overflow,
-)
+from tools.text import edit_text, inspect_text
 from tools.geometry import arrange_shapes, convert_to_curves, transform_shapes
 from tools.shapes import create_shape, delete_shapes, group_shapes, powerclip
 from tools.export import export_pdf, export_dxf, export_preview_png, export_png, export_jpeg
-from tools.preflight import check_dimensions, check_text_overflow_all
+from tools.preflight import check_dimensions
 from tools.inks import get_ink_inventory
 from tools.find import find_shapes
 from tools.colors import set_fill, set_transparency
@@ -122,52 +118,29 @@ def test_step3_create_placeholders(tr: TestResult):
     """步骤3：创建占位符文字"""
     print("\n[步骤3] 创建占位符文字…")
 
-    result1 = create_text_frame(DOC.path, 20, 25, 160, 30, "房间号")
+    result1 = create_shape(DOC.path, 1, "paragraph_text", 20, 25, "mm", width=160, height=30, text="房间号",
+                           name="placeholder_room")
     tr.step("创建 placeholder_room (x:20 y:25 w:160 h:30)", result1)
 
-    result2 = create_text_frame(DOC.path, 20, 45, 160, 20, "部门名称")
+    result2 = create_shape(DOC.path, 1, "paragraph_text", 20, 45, "mm", width=160, height=20, text="部门名称",
+                           name="placeholder_dept")
     tr.step("创建 placeholder_dept (x:20 y:45 w:160 h:20)", result2)
 
 
 def test_step4_replace_text(tr: TestResult):
     """步骤4：替换文字内容"""
     print("\n[步骤4] 替换文字内容…")
-    conn = get_connection()
-
-    def _rename_shapes():
-        doc = conn.app.ActiveDocument
-        text_shapes = []
-        for s in doc.ActivePage.Shapes:
-            try:
-                _ = s.Text
-                text_shapes.append(s)
-            except Exception:
-                continue
-        renamed = []
-        if len(text_shapes) >= 1:
-            text_shapes[0].Name = "placeholder_room"
-            renamed.append("placeholder_room")
-        if len(text_shapes) >= 2:
-            text_shapes[1].Name = "placeholder_dept"
-            renamed.append("placeholder_dept")
-        return renamed
-
-    result = conn.safe_call(_rename_shapes)
-    if not result["success"]:
-        tr.step("重命名形状", ToolResult.fail(result.get("error", "失败")))
+    found = find_shapes(DOC.path, pages=[1], filters={"name": "placeholder_*"})
+    ids = {shape["name"]: shape["id"] for shape in found.data["shapes"]} if found.success else {}
+    if "placeholder_room" not in ids:
+        tr.skip("查找占位符", "文字形状不足")
         return
-    renamed = result["result"]
-    if "placeholder_room" not in renamed:
-        tr.skip("重命名形状", "文字形状不足")
-        return
-    tr.step("重命名形状 → placeholder_room", ToolResult.ok("OK"))
-    if "placeholder_dept" in renamed:
-        tr.step("重命名形状 → placeholder_dept", ToolResult.ok("OK"))
+    DOC.texts = ids
 
-    result1 = set_text_content(DOC.path, "placeholder_room", "301")
+    result1 = edit_text(DOC.path, 1, [ids["placeholder_room"]], content="301")
     tr.step("替换 placeholder_room → '301'", result1)
 
-    result2 = set_text_content(DOC.path, "placeholder_dept", "研发中心")
+    result2 = edit_text(DOC.path, 1, [ids["placeholder_dept"]], content="研发中心")
     tr.step("替换 placeholder_dept → '研发中心'", result2)
 
 
@@ -175,11 +148,8 @@ def test_step5_text_overflow(tr: TestResult):
     """步骤5：文字溢出检查"""
     print("\n[步骤5] 文字溢出检查…")
 
-    result1 = check_text_overflow("placeholder_room")
-    tr.step("placeholder_room 溢出检查", result1)
-
-    result2 = check_text_overflow("placeholder_dept")
-    tr.step("placeholder_dept 溢出检查", result2)
+    result = inspect_text(DOC.path, 1, list(getattr(DOC, "texts", {}).values()) or None, include=["frame"])
+    tr.step("占位符溢出检查", result)
 
 
 def test_step6_preflight(tr: TestResult):
@@ -373,8 +343,8 @@ def test_step10_advanced_p1(tr: TestResult):
     tr.step("切换回第1页", result)
 
     # 印前全局检查
-    result = check_text_overflow_all()
-    tr.step("全文档文字溢出检查", result)
+    result = inspect_text(DOC.path, include=["frame", "fonts"])
+    tr.step("全文档文字溢出与字体检查", result)
 
     result = get_ink_inventory(DOC.path, pages=[1], printable_only=True)
     tr.step("油墨清单", result)

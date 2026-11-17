@@ -31,6 +31,7 @@ from core.structure import invalidate, locate_entries, page_layers, shape_range,
 from core.targets import resolve_document, resolve_page
 from core.units import MEASUREMENT_UNITS, convert, unit_name
 from tools.colors import _com_shape, _edit, _outline_range, _read, _RefusedError, _resolve_color, _states
+from tools.text import check_text, font_name, normalize_breaks, text_state
 
 Unit = Literal["pt", "mm", "in", "cm"]
 ColorSpec = str | dict
@@ -129,7 +130,7 @@ def _top_level_new(doc, page, before):
 def create_shape(
     document_path: str,
     page_index: int,
-    kind: Literal["rectangle", "ellipse", "line"],
+    kind: Literal["rectangle", "ellipse", "line", "artistic_text", "paragraph_text"],
     x: float,
     y: float,
     unit: Unit,
@@ -143,19 +144,38 @@ def create_shape(
     outline_width: float | None = None,
     corner_radius: float = 0.0,
     name: str | None = None,
+    text: str | None = None,
+    font: str | None = None,
+    size: float | None = None,
 ) -> ToolResult:
-    """Create a rectangle, ellipse or line on an exact page and layer. One undo step, read back.
+    """Create a rectangle, ellipse, line or text on an exact page and layer. One undo step, read back.
 
     Lengths in unit, page coordinates (y up). rectangle/ellipse: bottom-left x, y plus width, height
-    (corner_radius: rectangles); line: x, y to x2, y2. layer: an editable layer of this page (default: the active
+    (corner_radius: rectangles); line: x, y to x2, y2; artistic_text: text from baseline point x, y;
+    paragraph_text: text in the frame x, y, width, height. Text kinds take text ("\n" breaks a paragraph), font
+    (installed) and size (pt); fill colors the text. layer: an editable layer of this page (default: the active
     layer if on this page, else the top editable one). fill, outline: color specs (see set_fill); outline_width
-    in unit. Returns shape_id, layer, bounds and paint.
+    in unit. Returns shape_id, layer, bounds and paint (text: text, runs). Change text with edit_text.
     """
-    if kind not in ("rectangle", "ellipse", "line"):
-        return ToolResult.fail("kind must be rectangle, ellipse or line")
+    if kind not in ("rectangle", "ellipse", "line", "artistic_text", "paragraph_text"):
+        return ToolResult.fail("kind must be rectangle, ellipse, line, artistic_text or paragraph_text")
     if unit not in MEASUREMENT_UNITS:
         return ToolResult.fail(f"unit must be one of {', '.join(MEASUREMENT_UNITS)}")
-    if kind == "line":
+    is_text = kind.endswith("_text")
+    if is_text:
+        problem = check_text(text) if text else "Text kinds need a non-empty text"
+        if problem:
+            return ToolResult.fail(problem)
+        text = normalize_breaks(text)
+        if size is not None and (not _finite(size) or not 0 < size <= 3000):
+            return ToolResult.fail("size is in points, above 0 and at most 3000")
+    elif text is not None or font is not None or size is not None:
+        return ToolResult.fail("text, font and size are for artistic_text and paragraph_text")
+    if kind == "artistic_text":
+        if not _finite(x, y) or any(v is not None for v in (width, height, x2, y2)):
+            return ToolResult.fail("artistic_text takes the baseline start x, y only (no width, height, x2, y2)")
+        box = (x, y, x, y)
+    elif kind == "line":
         if not _finite(x, y, x2, y2) or width is not None or height is not None:
             return ToolResult.fail("A line takes x, y, x2 and y2 (no width or height)")
         box = (min(x, x2), min(y, y2), max(x, x2), max(y, y2))
@@ -179,6 +199,7 @@ def create_shape(
         left, bottom, right, top = (convert(v, unit, document_unit) for v in box)
         fill_color = _resolve_color(app, doc, page, fill_spec) if fill_spec is not None else None
         outline_color = _resolve_color(app, doc, page, outline_spec) if outline_spec is not None else None
+        resolved_font = font_name(app, font) if font is not None else None
         with undoable(doc, page, f"MCP create_shape {kind}") as step:
             if kind == "rectangle":
                 radius = convert(corner_radius, unit, document_unit)
@@ -186,8 +207,18 @@ def create_shape(
             elif kind == "ellipse":
                 shape = on.CreateEllipse2((left + right) / 2, (bottom + top) / 2, (right - left) / 2,
                                           (top - bottom) / 2)
-            else:
+            elif kind == "line":
                 shape = on.CreateLineSegment(*(convert(v, unit, document_unit) for v in (x, y, x2, y2)))
+            elif kind == "artistic_text":
+                shape = on.CreateArtisticText(left, bottom, text)
+            else:
+                shape = on.CreateParagraphText(left, top, right, bottom, text)
+            if is_text:
+                story = shape.Text.Story
+                if resolved_font is not None:
+                    story.Font = resolved_font
+                if size is not None:
+                    story.Size = float(size)
             if name:
                 shape.Name = name
             if fill_color is not None:
@@ -208,7 +239,8 @@ def create_shape(
         if page_ids(doc, page) - step.before != {shape_id}:
             problems.append({"problem": "other shapes changed on the page"})
         tolerance = convert(_TOLERANCE_PT, "pt", document_unit)
-        if any(abs(a - b) > tolerance for a, b in zip(edges[shape_id], (left, bottom, right, top), strict=True)):
+        if kind != "artistic_text" and any(
+                abs(a - b) > tolerance for a, b in zip(edges[shape_id], (left, bottom, right, top), strict=True)):
             problems.append({"problem": "bounds differ from the request", "bounds": record["bounds"]})
         if record["layer"] != on.Name:
             problems.append({"problem": f"created on layer {record['layer']!r}"})
@@ -219,12 +251,27 @@ def create_shape(
             problems.append({"problem": "outline color differs", "outline": line})
         if outline_width is not None and abs(line.get("width_pt", -1) - convert(outline_width, unit, "pt")) > 0.001:
             problems.append({"problem": "outline width differs", "outline": line})
+        if is_text:
+            problems.extend(_text_problems(doc, page, shape_id, text, resolved_font, size, record))
         data = {"shape_id": shape_id, "kind": kind, "unit": unit, "name": name, **record}
         if problems:
             data["verification_errors"] = problems
         return data
 
     return _page_edit(document_path, page_index, body)
+
+
+def _text_problems(doc, page, shape_id, text, font, size, record):
+    """Read-back of new text: content, font and size of every character (paint is checked with the record)."""
+    state = text_state(doc, page, shape_id)
+    record.update(state)
+    problems = []
+    if state["text"] != text:
+        problems.append({"problem": "text differs", "text": state["text"]})
+    if any((font is not None and run["font"] != font) or (size is not None and abs(run["size"] - size) > 0.01)
+           for run in state["font_runs"]):
+        problems.append({"problem": "font or size differs", "font_runs": state["font_runs"]})
+    return problems
 
 
 # --- import_file ----------------------------------------------------------------------------------------------

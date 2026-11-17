@@ -29,7 +29,7 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
        result = conn.safe_call(lambda: actual_com_work())   # 只读用 conn.read_call
        return respond(result, document_path=document_path, page_index=page_index)
    ```
-   连接检查、重新连接与超时处理由 `safe_call` 统一管理。不要用缓存的 `conn.status` 拦截工具，也不要重试可能已写入的操作。不要写静默的 `except Exception: pass`：逐对象报告失败（`warnings`、`failed`、`unreadable`），或让错误上抛。所有面向 Agent 的消息用英文，单位用名称（`"in"`、`"mm"`），不要用整数代码。
+   连接检查、重新连接与超时处理由 `safe_call` 统一管理。不要用缓存的 `conn.status` 拦截工具，也不要重试可能已写入的操作。不要写静默的 `except Exception: pass`：逐对象报告失败（`warnings`、`failed`、`unreadable`），或让错误上抛。所有面向 Agent 的消息用英文，单位用名称（`"in"`、`"mm"`），不要用整数代码。失败的 `ToolResult`（`success=False`）在 MCP 线上自动带 `isError: true`（`core.results.CorelTool`，E14），structured content 不变。
 4. **所有工具注册在 `server.py`**，新增工具必须同时在该文件加 `add(...)`，并让 `scripts/validation/catalog_size.py --budget`（`accept_mcp.py` 也会检查）保持在预算内。
 5. **函数 docstring 即 MCP 工具描述**，会被 Agent 看到：英文、简短，写清做什么、关键参数与单位、返回什么、何时用它而不是相近的工具。共享约定（document_path、page_index、shape_ids、单位、颜色规格、拒绝规则、错误格式）写在 `server.py` 的 `INSTRUCTIONS` 里，颜色规格的完整写法在 `set_fill` 的 docstring 里，其他工具写 "color spec (see set_fill)"。
 6. **COM 常量是硬编码整数**（`cdrDXF=86`, `cdrPNG=776`, `cdrMillimeter=3`, `cdrTextShape=3` 等）。这些常量来自 CorelDRAW 类型库，只有 Windows 上运行 `makepy` 才能生成类型存根，不要试图从 `win32com.client.constants` 导入。

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from core.connection import close_connection, get_connection
 from core.models import ToolResult
+from core.results import CorelTool
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from fastmcp.tools import Tool
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
@@ -58,8 +58,9 @@ def _lean_schema(schema: dict) -> dict:
 
 def add(fn, hints=None):
     """Register a tool function: docstring as description, no output schema (every tool returns the same
-    ToolResult object, still sent as structured content), lean input schema, MCP annotations."""
-    tool = Tool.from_function(fn, output_schema=None, annotations=hints)
+    ToolResult object, still sent as structured content; a failure has isError true), lean input schema, MCP
+    annotations."""
+    tool = CorelTool.from_function(fn, output_schema=None, annotations=hints)
     tool.parameters = _lean_schema(tool.parameters)
     mcp.add_tool(tool)
 
@@ -152,13 +153,8 @@ def register_tools():
     add(proof.export_page_proof_pdf, ADDS)
     add(plates.render_plates, ADDS)
 
-    add(text.set_text_content, SETS)
-    add(text.set_text_content_by_id, SETS)
-    add(text.inspect_text_fill_runs, READ)
-    add(text.set_text_style, SETS)
-    add(text.fit_text_to_frame, SETS)
-    add(text.check_text_overflow, READ)
-    add(text.create_text_frame, ADDS)
+    add(text.inspect_text, READ)
+    add(text.edit_text, SETS)
 
     add(colors.set_fill, SETS)
     add(colors.set_outline, SETS)
@@ -182,8 +178,6 @@ def register_tools():
     add(export.batch_export, SETS)
 
     add(preflight.check_dimensions, READ)
-    add(preflight.check_text_overflow_all, READ)
-    add(preflight.check_missing_fonts)
 
     add(templates.list_templates, READ)
     add(templates.get_template_info, READ)

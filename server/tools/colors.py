@@ -343,7 +343,7 @@ def set_fill(
       {"from_shape_id", "part": "fill"|"outline"}. get_ink_inventory inks and inspect_shapes colors work as is.
     - fountain: {"type": "linear"|"radial", "angle": degrees, "stops": [{"color", "position": 0-100}, ...]}.
     - from_shape_id: copy a donor's uniform fill (same page).
-    text_range [start, end) (as inspect_text_fill_runs) recolors only those characters of one text shape.
+    text_range [start, end) (inspect_text fill_runs) recolors only those characters of one text shape.
     Refuses groups and bitmaps. Returns each fill as get_ink_inventory names it (text: runs).
     """
     if sum(value is not None for value in (color, fountain, from_shape_id)) != 1:

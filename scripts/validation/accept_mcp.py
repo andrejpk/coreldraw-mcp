@@ -4,7 +4,8 @@ feedback (render_plates, merged export_page_proof_pdf, simulate_overprints) and 
 artifact presets, paging, selection, the named-shape cache fingerprint) and E13/E13b geometry and effect tools
 (offset_silhouette, combine_shapes, duplicate_shapes, separate_effect, convert_to_curves, apply_contour,
 inspect_shapes effect_details) on fresh template copies in <dir>\fx\e13b, and the E07+E06 layer,
-transform, arrange, delete, group, PowerClip, create and import tools on copies in <dir>\fx\e07.
+transform, arrange, delete, group, PowerClip, create and import tools on copies in <dir>\fx\e07, and the
+E14 text tools (inspect_text, edit_text, create_shape text kinds) and isError on copies in <dir>\fx\e14.
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -116,10 +117,10 @@ check("list: detail adds layers with printable flags",
 
 # Mismatched-document refusal for active-document tools.
 b_shapes = direct(lambda: doc_of(B).Pages(1).Shapes.Count)
-r = call("create_text_frame", document_path=B, x=10, y=10, width=20, height=10, text="x")
+r = call("add_guideline", document_path=B, position=10)
 check("mismatch: legacy edit on a non-active document refused", not r["success"] and "mismatch" in r["error"]
       and direct(lambda: doc_of(B).Pages(1).Shapes.Count) == b_shapes, r.get("error"))
-r = call("create_text_frame", x=10, y=10, width=20, height=10, text="x")
+r = call("add_guideline", position=10)
 check("mismatch: legacy edit without document_path refused", not (isinstance(r, dict) and r.get("success")), r)
 r = call("check_dimensions", expected_width=215.9, expected_height=279.4, document_path=B)
 check("mismatch: legacy read naming a non-active document refused", not r["success"] and "mismatch" in r["error"])
@@ -133,7 +134,8 @@ rect = r["data"]["shape_id"] if r["success"] else None
 # Tools that used to force Unit = mm must leave the unit alone.
 for name, args in (
     ("add_guideline", {"document_path": A, "position": 25.4}),
-    ("create_text_frame", {"document_path": A, "x": 25.4, "y": 25.4, "width": 50.8, "height": 12.7, "text": "unit"}),
+    ("create_shape", {"document_path": A, "page_index": 1, "kind": "paragraph_text", "x": 25.4, "y": 25.4,
+                      "width": 50.8, "height": 12.7, "unit": "mm", "text": "unit"}),
     ("check_dimensions", {"document_path": A, "expected_width": 215.9, "expected_height": 279.4}),
     ("arrange_shapes", {"document_path": A, "page_index": 1, "shape_ids": [rect], "align": "left", "reference": "page"}),
     ("export_png", {"document_path": A, "path": FX + r"\e08_unit.png", "dpi": 72}),
@@ -145,10 +147,10 @@ for name, args in (
     if name == "check_dimensions":
         check("unit: check_dimensions converts the inch page to mm explicitly", r["success"] and r["data"]["passed"],
               r["data"].get("actual") if r["success"] else None)
-    if name == "create_text_frame" and r["success"]:
+    if name == "create_shape" and r["success"]:
         box = direct(lambda: (lambda s: (s.PositionX, s.SizeWidth))(
             [x for x in doc_of(A).Pages(1).Shapes if str(x.StaticID) == r["data"]["shape_id"]][0]))
-        check("unit: create_text_frame mm arguments land at the right inch position",
+        check("unit: create_shape paragraph_text mm arguments land at the right inch position",
               abs(box[0] - 1) < 1e-3 and abs(box[1] - 2) < 1e-3, box)
 
 # Pages
@@ -221,13 +223,13 @@ call("close_document", document_path=FX + r"\e08_untitled.cdr")
 call("open_document", path=SAVED)
 check("setup: accept.cdr is open but not active", active_path() == SAVED)
 
-fmt = lambda runs: [(r["start"], r["end"], r["text"], r["fill"].get("color", {}).get("name")) for r in runs]  # noqa: E731
+fmt = lambda runs: [(r["start"], r["end"], r["text"], r["fill"].get("ink")) for r in runs]  # noqa: E731
 
 # 1. Text fill runs -------------------------------------------------------------------------------
-r = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
+r = call("inspect_text", document_path=DOC, page_index=1, shape_ids=[IDS["text"]], include=["fills"])
 check("text runs: inspect succeeds", r["success"], r.get("error") or f"{r['_seconds']}s")
 check("targets: a read on an inactive document does not activate it", active_path() == SAVED)
-runs = r["data"]["runs"]
+runs = r["data"]["shapes"][0]["fill_runs"]
 check("text runs: whitespace run with legacy spot is listed",
       fmt(runs) == [(0, 2, "AB", "PANTONE 186 C"), (2, 4, "  ", "PANTONE 300 C"), (4, 6, "CD", "PANTONE 186 C")]
       and runs[1]["whitespace_only"], fmt(runs))
@@ -246,11 +248,13 @@ check("text copy: donor fill applied to whitespace range (set_fill text_range)",
       and new_runs == [(0, 6, "AB  CD", "PANTONE 186 C")], r.get("error") or new_runs)
 check("targets: an edit activates its document (so undo stays in it)", active_path() == DOC)
 check("text copy: donor color includes tint", r["success"] and r["data"]["color"].get("tint") == 100)
-again = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
-check("text copy: independent readback agrees", fmt(again["data"]["runs"]) == [(0, 6, "AB  CD", "PANTONE 186 C")])
+text_runs = lambda: call("inspect_text", document_path=DOC, page_index=1, shape_ids=[IDS["text"]],  # noqa: E731
+                         include=["fills"])["data"]["shapes"][0]["fill_runs"]
+again = text_runs()
+check("text copy: independent readback agrees", fmt(again) == [(0, 6, "AB  CD", "PANTONE 186 C")])
 undo(DOC)
-undone = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
-check("text copy: one undo restores the original runs", fmt(undone["data"]["runs"]) == fmt(runs), fmt(undone["data"]["runs"]))
+undone = text_runs()
+check("text copy: one undo restores the original runs", fmt(undone) == fmt(runs), fmt(undone))
 
 # 2. Weld consecutive shapes (E13: combine_shapes weld with preserve_order) ----------------------------
 W = lambda *names: [IDS[n] for n in names]  # noqa: E731
@@ -653,10 +657,10 @@ def shapes_of(path, page=1):
 
 
 def runs_of(path, shape_id):
-    r = call("inspect_text_fill_runs", document_path=path, page_index=1, shape_id=shape_id)
+    r = call("inspect_text", document_path=path, page_index=1, shape_ids=[shape_id], include=["fills"])
     assert r["success"], r
-    return [(x["start"], x["end"], x["text"], x["fill"].get("color", {}).get("name"),
-             x["fill"].get("color", {}).get("tint")) for x in r["data"]["runs"]]
+    return [(x["start"], x["end"], x["text"], x["fill"].get("ink"), x["fill"].get("tint"))
+            for x in r["data"]["shapes"][0]["fill_runs"]]
 
 
 def snapshot(path, texts=()):
@@ -824,7 +828,7 @@ check("targets: replace_color activates its document", active_path() == CL2)
 runs_after = runs_of(CL2, E["text_mixed"])
 check("replace real: only the matching text runs changed",
       runs_after == [(0, 2, "AB", "PANTONE 485 C", 100), (2, 4, "  ", "PANTONE 300 C", 100),
-                     (4, 6, "CD", "PANTONE 485 C", 100), (6, 9, " EF", None, None)]
+                     (4, 6, "CD", "PANTONE 485 C", 100), (6, 9, " EF", "CMYK 100/0/0/0", None)]
       and mixed_runs[1] == runs_after[1], runs_after)
 ids186, _ = ink_ids(CL2, "PANTONE 186 C")
 ids485, found485 = ink_ids(CL2, "PANTONE 485 C")
@@ -838,7 +842,7 @@ r = call("replace_color", document_path=CL2, from_color="PANTONE 186 C", to_colo
          dry_run=False)
 runs_none = runs_of(CL2, E["text_mixed"])
 check("replace to none: matching text runs lose their fill, other runs intact", r["success"]
-      and r["data"]["verified"] == 5 and runs_none[1] == mixed_runs[1] and runs_none[0][3] is None,
+      and r["data"]["verified"] == 5 and runs_none[1] == mixed_runs[1] and runs_none[0][3] == "none",
       r.get("error") or runs_none)
 call("undo", document_path=CL2)
 
@@ -2075,11 +2079,258 @@ r = call("list_documents")
 entry19 = entry(r, LY19)
 check("units: list_documents reports the unit as a name", entry19 and entry19["unit"] in ("in", "mm", "cm", "pt"),
       entry19 and entry19["unit"])
-r = call("check_text_overflow", shape_id="nope", document_path="")
-check("feedback: legacy text tools answer in English with a next step",
+r = call("edit_text", document_path=LY19, page_index=1, shape_ids=["nope"], content="x")
+check("feedback: text tools answer in English with a next step",
       not r["success"] and r["error"].isascii() and ("find_shapes" in r["error"] or "open_document" in r["error"]),
       r.get("error"))
 r = call("close_document", document_path=LY19, discard_changes=True)
 check("cleanup: close the E19 layers.cdr copy", r["success"], r.get("error"))
+
+# 20. E14: inspect_text / edit_text / create_shape text, isError on failures -------------------------------------
+E14 = Path(FX) / "e14"
+for leftover in call("list_documents")["data"]["documents"]:
+    if str(leftover.get("document_path") or "").lower().startswith(str(E14).lower() + "\\"):
+        call("close_document", document_path=leftover["document_path"], discard_changes=True)
+shutil.rmtree(E14, ignore_errors=True)
+E14.mkdir(parents=True, exist_ok=True)
+F14 = {}
+for stem, source in (("text_runs", TEMPLATES / "text_runs.cdr"), ("screen_job", TEMPLATES / "screen_job.cdr"),
+                     ("kings", Path(r"C:\CorelMcpLab\samples\51019 - Kings High School 2021 Shirt Order - SCREENS.cdr"))):
+    shutil.copyfile(source, E14 / f"{stem}.cdr")
+    F14[stem] = str(E14 / f"{stem}.cdr")
+    assert call("open_document", path=F14[stem], activate=False)["success"], stem
+TR, SJ, KG14 = F14["text_runs"], F14["screen_job"], F14["kings"]
+T14 = dict(document_path=TR, page_index=1)
+
+
+def fills14(shape):
+    return [(x["start"], x["end"], x["text"], x["fill"]["ink"], x["fill"].get("tint")) for x in shape["fill_runs"]]
+
+
+def text14(path, ids, **extra):
+    r = call("inspect_text", document_path=path, page_index=1, shape_ids=ids, **extra)
+    assert r["success"], r
+    return {s["id"]: s for s in r["data"]["shapes"]}
+
+
+def by_name14(path):
+    r = call("find_shapes", document_path=path, pages=[1], filters={"type": "text"})
+    return {s["name"]: s["id"] for s in r["data"]["shapes"]}
+
+
+N14 = by_name14(TR)
+active14 = active_path()
+r = call("inspect_text", **T14)
+shapes14 = {s["id"]: s for s in r["data"]["shapes"]} if r["success"] else {}
+check("inspect_text: whole page lists all 6 texts with kinds", r["success"] and len(shapes14) == 6
+      and shapes14[N14["text_paragraph"]]["kind"] == "paragraph" and shapes14[N14["text_runs"]]["kind"] == "artistic",
+      r.get("error") or r["message"])
+check("inspect_text: a read does not activate the document", active_path() == active14)
+runs14 = shapes14.get(N14["text_runs"], {})
+check("inspect_text: fill runs keep [start, end) semantics and the whitespace flag (absorbs inspect_text_fill_runs)",
+      fills14(runs14) == [(0, 3, "RED", "PANTONE 186 C", 100), (3, 5, "  ", "PANTONE 300 C", 100),
+                          (5, 10, "BLACK", "CMYK 0/0/0/100", None)]
+      and [x["whitespace_only"] for x in runs14["fill_runs"]] == [False, True, False], runs14.get("fill_runs"))
+check("inspect_text: spot tints split fill runs", fills14(shapes14[N14["text_tint_runs"]])
+      == [(0, 2, "TI", "PANTONE 186 C", 100), (2, 4, "NT", "PANTONE 186 C", 50)])
+multi14 = shapes14[N14["text_multiline_artistic"]]
+check("inspect_text: multi-line artistic text: a line break is one character (\\r), runs cover all 28",
+      multi14["characters"] == 28 and multi14["lines"] == 3 and multi14["paragraphs"] == 3
+      and multi14["text"][8] == "\r" and multi14["fill_runs"][0]["end"] == 28, multi14)
+para14 = shapes14[N14["text_paragraph"]]
+check("inspect_text: paragraph frame fits (overflow, visible characters, linked frames)",
+      para14["frame"] == {"overflowing": False, "visible_characters": 115, "linked_frames": 1}
+      and para14["paragraphs"] == 3 and "frame" not in multi14, para14.get("frame"))
+check("inspect_text: font runs (font, size, bold, italic) and installed-font summary",
+      runs14["font_runs"] == [{"start": 0, "end": 10, "text": "RED  BLACK", "font": "Arial", "size": 36.0,
+                               "bold": False, "italic": False}]
+      and r["data"]["fonts"][0]["font"] == "Arial" and r["data"]["fonts"][0]["installed"]
+      and r["data"]["missing_fonts"] == [] and r["data"]["overflowing"] == [], r["data"].get("fonts"))
+outlined14 = shapes14[N14["text_outlined"]]
+check("inspect_text: outline color and width in pt", outlined14["outline"]["color"]["ink"] == "CMYK 0/0/0/100"
+      and abs(outlined14["outline"]["width_pt"] - 0.72) < 1e-3
+      and shapes14[N14["text_rgb"]]["outline"]["kind"] == "none", outlined14.get("outline"))
+r = call("inspect_text", **T14, include=["frame"])
+check("inspect_text: include limits the details", r["success"]
+      and not any("fill_runs" in s or "font_runs" in s for s in r["data"]["shapes"]) and "fonts" not in r["data"])
+SJN = by_name14(SJ)
+rect14 = call("find_shapes", document_path=SJ, pages=[1], filters={"type": "rectangle"})["data"]["shapes"][0]["id"]
+r = call("inspect_text", document_path=SJ, page_index=1, shape_ids=[SJN["title_186"], rect14])
+check("inspect_text: exact IDs; a non-text ID is listed in not_text", r["success"]
+      and [s["id"] for s in r["data"]["shapes"]] == [SJN["title_186"]] and r["data"]["not_text"] == [rect14],
+      r.get("error") or r["data"].get("not_text"))
+r = call("inspect_text", document_path=KG14)
+kinds14 = [s["kind"] for s in r["data"]["shapes"]] if r["success"] else []
+check("inspect_text: whole document (Kings): 4 paragraph and 2 artistic texts, fonts installed",
+      r["success"] and kinds14.count("paragraph") == 4 and kinds14.count("artistic") == 2
+      and r["data"]["missing_fonts"] == [] and r["data"]["next_offset"] is None, r.get("error") or kinds14)
+r1 = call("inspect_text", document_path=TR, shape_ids=["4"])
+r2 = call("inspect_text", **T14, include=["colors"])
+r3 = call("inspect_text", **T14, offset=-1)
+check("inspect_text: shape_ids without page_index, unknown include, negative offset refused",
+      not any(isinstance(x, dict) and x["success"] for x in (r1, r2, r3)), (r1, r2, r3))
+
+# edit_text content: only the changed middle is replaced
+RB = N14["text_runs"]
+before14 = text14(TR, [RB])[RB]
+r = call("edit_text", **T14, shape_ids=[RB], content="RED  WHITE")
+s14 = r["data"]["shapes"][0] if r["success"] else {}
+check("edit_text: content keeps every run's fill (only the changed middle is replaced)", r["success"]
+      and fills14(s14) == [(0, 3, "RED", "PANTONE 186 C", 100), (3, 5, "  ", "PANTONE 300 C", 100),
+                           (5, 10, "WHITE", "CMYK 0/0/0/100", None)]
+      and s14["replaced"] == {"range": [5, 10], "old": "BLACK", "new_range": [5, 10]}, r.get("error") or s14)
+check("edit_text: independent readback agrees", fills14(text14(TR, [RB])[RB]) == fills14(s14))
+check("edit_text: activates its document (undo stays in it)", active_path() == TR)
+call("undo", document_path=TR)
+check("edit_text: one undo restores text and runs", fills14(text14(TR, [RB])[RB]) == fills14(before14))
+r = call("edit_text", **T14, shape_ids=[RB], content="BLUE BLACK")
+check("edit_text: keep_runs refuses a replacement across fill runs, nothing changed", not r["success"]
+      and "formatting runs" in r["data"]["refused"][0]["reason"] and fills14(text14(TR, [RB])[RB])
+      == fills14(before14), r.get("error"))
+r = call("edit_text", **T14, shape_ids=[RB], content="BLUE BLACK", keep_runs=False)
+s14 = r["data"]["shapes"][0] if r["success"] else {}
+check("edit_text: keep_runs=false: new text takes the replaced range's last character's fill; suffix kept",
+      r["success"] and s14["text"] == "BLUE BLACK" and fills14(s14)[-1] == (5, 10, "BLACK", "CMYK 0/0/0/100", None)
+      and fills14(s14)[0][3] == "PANTONE 300 C", r.get("error") or s14.get("fill_runs"))
+call("undo", document_path=TR)
+r = call("edit_text", **T14, shape_ids=[RB], content="--", text_range=[3, 5])
+check("edit_text: text_range replaces exactly [start, end) in that run's fill", r["success"]
+      and fills14(r["data"]["shapes"][0])[1] == (3, 5, "--", "PANTONE 300 C", 100), r.get("error"))
+r = call("edit_text", **T14, shape_ids=[RB], content="!", text_range=[10, 10])
+check("edit_text: an empty range inserts", r["success"] and r["data"]["shapes"][0]["text"] == "RED--BLACK!"
+      and fills14(r["data"]["shapes"][0])[-1][3] == "CMYK 0/0/0/100", r.get("error") or r["data"])
+r = call("edit_text", **T14, shape_ids=[RB], text_range=[0, 3], font="times new roman", size=20, bold=True)
+fr14 = r["data"]["shapes"][0]["font_runs"] if r["success"] else []
+check("edit_text: style on a range only (font matched case-insensitively), fills untouched", r["success"]
+      and [(x["start"], x["end"], x["font"], x["size"], x["bold"]) for x in fr14]
+      == [(0, 3, "Times New Roman", 20.0, True), (3, 11, "Arial", 36.0, False)]
+      and fills14(r["data"]["shapes"][0])[0][3] == "PANTONE 186 C", r.get("error") or fr14)
+for _ in range(3):
+    call("undo", document_path=TR)
+check("edit_text: three undos restore the original", fills14(text14(TR, [RB])[RB]) == fills14(before14)
+      and text14(TR, [RB])[RB]["font_runs"] == before14["font_runs"])
+TT = N14["text_tint_runs"]
+r = call("edit_text", **T14, shape_ids=[TT], italic=True)
+check("edit_text: whole-text italic keeps spot tints", r["success"]
+      and fills14(r["data"]["shapes"][0]) == [(0, 2, "TI", "PANTONE 186 C", 100), (2, 4, "NT", "PANTONE 186 C", 50)]
+      and r["data"]["shapes"][0]["font_runs"][0]["italic"], r.get("error"))
+ML = N14["text_multiline_artistic"]
+r = call("edit_text", **T14, shape_ids=[ML], content="Line one\nLine 2\nLine three", alignment="center")
+s14 = r["data"]["shapes"][0] if r["success"] else {}
+check("edit_text: multi-line content (\\n becomes a break), positions and alignment read back", r["success"]
+      and s14["text"] == "Line one\rLine 2\rLine three" and s14["characters"] == 26 and s14["lines"] == 3
+      and s14["replaced"]["range"] == [14, 17] and s14["alignment"] == "center"
+      and fills14(s14) == [(0, 26, "Line one\rLine 2\rLine three", "PANTONE 354 C", 100)], r.get("error") or s14)
+PA = N14["text_paragraph"]
+r = call("edit_text", **T14, shape_ids=[PA], content="Many more words. " * 60)
+frame14 = r["data"]["shapes"][0]["frame"] if r["success"] else {}
+listed14 = call("inspect_text", **T14, include=["frame"])["data"]["overflowing"]
+check("edit_text/inspect_text: grown paragraph text overflows (visible characters, overflowing list)",
+      r["success"] and frame14["overflowing"] and frame14["visible_characters"] < 1020 and listed14 == [PA],
+      (r.get("error"), frame14, listed14))
+r = call("edit_text", **T14, shape_ids=[PA], fit_to_frame=True)
+check("edit_text: fit_to_frame shrinks the text into its frame (replaces fit_text_to_frame)", r["success"]
+      and not r["data"]["shapes"][0]["frame"]["overflowing"] and r["data"]["shapes"][0]["font_runs"][0]["size"] < 14,
+      r.get("error") or r["data"]["shapes"][0].get("frame"))
+r = call("inspect_text", **T14, shape_ids=[PA])
+check("inspect_text: text is truncated unless full_text", r["data"]["shapes"][0].get("text_truncated")
+      and len(r["data"]["shapes"][0]["text"]) == 121
+      and len(call("inspect_text", **T14, shape_ids=[PA], full_text=True)["data"]["shapes"][0]["text"]) == 1020)
+snap14 = text14(TR, list(shapes14))
+RGB = N14["text_rgb"]
+bad14 = [call("edit_text", **T14, shape_ids=[RGB], content="A\U0001F600B"),
+         call("edit_text", **T14, shape_ids=[RGB], font="NoSuchFontXYZ"),
+         call("edit_text", **T14, shape_ids=[RGB], fit_to_frame=True),
+         call("edit_text", **T14, shape_ids=[PA], size=10, fit_to_frame=True),
+         call("edit_text", **T14, shape_ids=[RGB], text_range=[2, 2], bold=True),
+         call("edit_text", **T14, shape_ids=[RGB], content="x", text_range=[3, 99]),
+         call("edit_text", **T14, shape_ids=[RGB])]
+check("edit_text: non-BMP characters, unknown font, fit on artistic text, size with fit, empty style range, "
+      "range past the end and no change refused; nothing changed",
+      not any(x["success"] for x in bad14) and "Basic Multilingual Plane" in bad14[0]["error"]
+      and "not installed" in bad14[1]["error"] and "frame" in str(bad14[2]["data"].get("refused"))
+      and text14(TR, list(shapes14)) == snap14, [x.get("error") for x in bad14])
+rect_tr = call("create_shape", **T14, kind="rectangle", x=1, y=1, width=1, height=1, unit="in")["data"]["shape_id"]
+r = call("edit_text", **T14, shape_ids=[RGB, rect_tr], content="x")
+check("edit_text: a non-text target refuses the whole call", not r["success"]
+      and r["data"]["refused"] == [{"id": rect_tr, "layer": "Text", "reason": "not a text shape"}]
+      and text14(TR, [RGB])[RGB]["text"] == "RGB text", r.get("data"))
+r = call("edit_text", **T14, shape_ids=[RGB], content="Aé中Ω text")
+check("edit_text: BMP non-ASCII text; CorelDRAW's glyph fallback font is reported", r["success"]
+      and r["data"]["shapes"][0]["text"] == "Aé中Ω text" and r["data"]["shapes"][0]["characters"] == 9,
+      r.get("error") or r["data"]["shapes"][0])
+
+# screen_job film title: change the mesh number, keep the spot ink (get_ink_inventory)
+def ink14(path, name):
+    inks = call("get_ink_inventory", document_path=path, pages=[1])["data"]["pages"][0]["inks"]
+    entry14 = next((i for i in inks if i["ink"] == name), {})
+    return entry14.get("parts", {}).get("text_fill", 0), [i["id"] for i in entry14.get("ids", [])]
+
+
+T186 = SJN["title_186"]
+before_ink = ink14(SJ, "PANTONE 186 C")
+r1 = call("edit_text", document_path=SJ, page_index=1, shape_ids=[T186], content="PANTONE 186 C 160")
+r2 = call("edit_text", document_path=SJ, page_index=1, shape_ids=[T186], content="186 C 200")
+after_ink = ink14(SJ, "PANTONE 186 C")
+check("edit_text: film title 'PANTONE 186 C 160' -> '186 C 200' stays in its spot ink (inventory agrees)",
+      r1["success"] and r2["success"] and r2["data"]["shapes"][0]["text"] == "186 C 200"
+      and fills14(r2["data"]["shapes"][0]) == [(0, 9, "186 C 200", "PANTONE 186 C", 100)]
+      and after_ink == before_ink and T186 in after_ink[1], (r2.get("error"), before_ink, after_ink))
+titles14 = [SJN[n] for n in ("title_186", "title_300", "title_116")]
+r = call("edit_text", document_path=SJ, page_index=1, shape_ids=titles14, size=30)
+check("edit_text: one call styles several titles", r["success"]
+      and all(s["font_runs"][0]["size"] == 30 for s in r["data"]["shapes"]), r.get("error"))
+call("undo", document_path=SJ)
+
+# create_shape text kinds (replace create_text_frame)
+r = call("create_shape", document_path=SJ, page_index=1, kind="artistic_text", x=1, y=1, unit="in",
+         text="PANTONE 300 C 160", font="arial", size=18, fill="300 C", layer="Film Titles")
+d14 = r.get("data") or {}
+check("create_shape artistic_text: exact layer, spot text fill, font and size read back", r["success"]
+      and d14["layer"] == "Film Titles" and d14["fill"]["ink"] == "PANTONE 300 C" and d14["text"] == "PANTONE 300 C 160"
+      and d14["font_runs"][0]["font"] == "Arial" and d14["font_runs"][0]["size"] == 18
+      and abs(d14["bounds"][1] - 1) < 0.1, r.get("error") or d14)
+check("create_shape artistic_text: the inventory counts it on the 300 C film",
+      ink14(SJ, "PANTONE 300 C")[0] == 2 and d14.get("shape_id") in ink14(SJ, "PANTONE 300 C")[1])
+r = call("create_shape", document_path=SJ, page_index=1, kind="paragraph_text", x=1, y=2, width=3, height=1,
+         unit="in", text="One\nTwo", size=12, fill="CMYK 0/0/0/100", layer="Film Titles")
+check("create_shape paragraph_text: frame bounds exact, \\n is a paragraph break", r["success"]
+      and near(r["data"]["bounds"], [1, 2, 4, 3]) and r["data"]["text"] == "One\rTwo", r.get("error") or r.get("data"))
+call("undo", document_path=SJ)
+call("undo", document_path=SJ)
+bad14 = [call("create_shape", document_path=SJ, page_index=1, kind="artistic_text", x=1, y=1, unit="in", text="\U0001F600"),
+         call("create_shape", document_path=SJ, page_index=1, kind="artistic_text", x=1, y=1, unit="in", text="x",
+              font="NoSuchFontXYZ"),
+         call("create_shape", document_path=SJ, page_index=1, kind="artistic_text", x=1, y=1, width=2, unit="in", text="x"),
+         call("create_shape", document_path=SJ, page_index=1, kind="rectangle", x=1, y=1, width=1, height=1, unit="in",
+              text="x"),
+         call("create_shape", document_path=SJ, page_index=1, kind="paragraph_text", x=1, y=1, unit="in", text="x")]
+check("create_shape text: non-BMP, unknown font, artistic with width, text on a rectangle, frame without size "
+      "refused", not any(x["success"] for x in bad14) and ink14(SJ, "PANTONE 300 C")[0] == 1,
+      [x.get("error") for x in bad14])
+
+
+# isError: failures are MCP error results that keep the structured payload
+async def _raw14():
+    async with Client("http://127.0.0.1:8765/mcp") as client:
+        bad = await client.call_tool_mcp("inspect_text", {"document_path": str(E14 / "not-open.cdr")})
+        good = await client.call_tool_mcp("get_coreldraw_status", {})
+        return bad, good
+
+bad_raw, good_raw = asyncio.run(_raw14())
+check("isError: a failed call is an MCP error result with the same structured content and text",
+      bad_raw.is_error and bad_raw.structured_content["success"] is False
+      and bad_raw.structured_content["data"]["state"] == "tool_error"
+      and json.loads(bad_raw.content[0].text) == bad_raw.structured_content, bad_raw)
+check("isError: a successful call is not an error", not good_raw.is_error and good_raw.structured_content["success"])
+
+listed14 = {tool.name for tool in asyncio.run(_catalog())}
+check("catalog: inspect_text and edit_text added; 9 text/preflight tools removed (create_text_frame -> create_shape)",
+      {"inspect_text", "edit_text", "create_shape"} <= listed14 and not listed14 & {
+          "set_text_content", "set_text_content_by_id", "inspect_text_fill_runs", "set_text_style",
+          "fit_text_to_frame", "check_text_overflow", "create_text_frame", "check_text_overflow_all",
+          "check_missing_fonts"} and len(listed14) == 60, len(listed14))
+for path14 in F14.values():
+    call("close_document", document_path=path14, discard_changes=True)
 
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

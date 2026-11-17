@@ -41,6 +41,15 @@ def same_color(want, got):
     return True
 
 
+def _from_identity(fill):
+    """An inspect_text fill (inventory identity) in inspect_shapes' color terms, for same_color."""
+    if fill.get("kind") == "spot":
+        return {"kind": "spot", "name": fill["ink"], "tint": fill.get("tint")}
+    if "components" in fill:
+        return {"kind": "process", "model": fill["ink"].split()[0], "components": fill["components"]}
+    return {"kind": fill.get("kind")}
+
+
 def reported_fill(rec):
     f = rec.get("fill")
     if f is None:
@@ -149,9 +158,10 @@ def verify(template):
                 continue
             res["issues"].append({"shape": s["name"], "check": check, "want": w, "got": g})
         if "runs" in want:
-            r = tool("inspect_text_fill_runs", document_path=path, page_index=p, shape_id=sid)
+            r = tool("inspect_text", document_path=path, page_index=p, shape_ids=[sid], include=["fills"])
             if r.get("success"):
-                got = [(x.get("start"), x.get("end"), x.get("fill", {}).get("color")) for x in r["runs"]]
+                r["runs"] = r["shapes"][0]["fill_runs"]
+                got = [(x.get("start"), x.get("end"), _from_identity(x.get("fill") or {})) for x in r["runs"]]
                 exp = [(x["range"][0], x["range"][1], x["fill"]) for x in want["runs"]]
                 if len(got) != len(exp) or not all(a[:2] == tuple(b[:2]) and same_color(b[2], a[2])
                                                    for a, b in zip(got, exp)):

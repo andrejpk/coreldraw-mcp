@@ -30,15 +30,15 @@ SYSTEM_PROMPT = """你是一个自动化设计 Agent，能够通过工具调用�
 2. **逐条处理**：对每条记录执行：
    a. open_document(模板路径) — 打开 CDR 模板（返回 document_path，后续所有工具都传入它）
    b. find_shapes(document_path, filters={"name": "placeholder_xxx"}) — 找到占位符，获取 shape_id（结果 shapes[0].id）
-   c. set_text_content(shape_id, 文字内容) — 替换文字
+   c. edit_text(document_path, page_index, [shape_id], content=文字内容) — 替换文字（保留原有填充和字体）
    d. 对每个占位符重复 b-c
-   e. check_text_overflow — 检查文字是否溢出
+   e. inspect_text(document_path, page_index, include=["frame", "fonts"]) — 检查文字是否溢出、字体是否缺失
    f. ★视觉检查★：调用 export_preview_png → 查看返回的图片
       - 文字是否完整？（无截断）
       - 整体比例是否合理？
       - 关键信息是否清晰？
       - 色块边界是否正确？
-      - 如有问题：调用 fit_text_to_frame 或调整字号 → 重新预览
+      - 如有问题：调用 edit_text(fit_to_frame=True) 或调整字号（edit_text size=）→ 重新预览
       - 确认 OK 后继续下一步
    g. 印前处理：convert_to_curves（find_shapes 找到文字 ID）、get_ink_inventory（RGB/工艺色来源与预期印版）
    h. 导出 PDF：export_pdf(路径, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
@@ -84,7 +84,7 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 ## 错误处理
 
 - 如果 find_shapes 返回 count 0：检查占位符名称是否正确，或用通配符（如 "placeholder_*"）重试
-- 如果文字溢出：先尝试 fit_text_to_frame，不成功则缩小字号
+- 如果文字溢出：先尝试 edit_text(fit_to_frame=True)，不成功则用 edit_text(size=…) 缩小字号
 - 如果颜色检查发现 RGB：用 set_fill(color="CMYK c/m/y/k") 或 replace_color 转为 CMYK
 - 如果某条记录处理失败：记录错误原因，继续处理下一条，不要中断整个批次
 - COM 连接失败时工具会返回错误信息，重试后仍失败则跳过该操作

@@ -20,7 +20,8 @@ from fastmcp import Client
 URL = "http://127.0.0.1:8765/mcp"
 SERVER = Path(__file__).resolve().parents[2] / "server"
 # E19 result (67 tools): 55,422 JSON chars (~13.9k tokens; 85,851 before), model-facing 48,808 chars, instructions
-# 1,128 chars, largest tool 2,394 chars (find_shapes). About 10 % headroom; raise it deliberately, with the reason in
+# 1,128 chars, largest tool 2,394 chars (find_shapes). E14 (60 tools): 54,070 JSON chars, model-facing 48,192.
+# About 10 % headroom; raise it deliberately, with the reason in
 # the results file, when an experiment adds capability.
 BUDGET = {"json_chars": 61_000, "model_chars": 54_000, "instructions_chars": 1_400, "max_tool_json_chars": 2_700}
 
