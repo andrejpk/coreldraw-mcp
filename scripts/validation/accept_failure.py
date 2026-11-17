@@ -1,7 +1,9 @@
 """In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, rollback of
 geometry edits that fail part way (combine_shapes, offset_silhouette after the union, after the contour, and when its
 time budget runs out), E13b refusals (locked layer, mixed pages, effect-generated input) on copies of layers.cdr and
-effects.cdr, and why edits activate their document (Undo)."""
+effects.cdr, E07 rollbacks part way (transform_shapes, delete_shapes, set_layer_properties, import_file,
+move_shapes_to_layer from a hidden layer) and the combine_shapes time budget, and why edits activate their document
+(Undo)."""
 import json, sys
 sys.path.insert(0, ".")
 from core.connection import get_connection
@@ -90,7 +92,7 @@ marker = conn.safe_call(earlier_edit)["result"]
 weld_before = layer_ids("Weld")
 
 
-def failing_weld(shapes, ids, keep, layer, order):
+def failing_weld(shapes, ids, keep, layer, order, budget):
     stack = order["stack"]
     shapes[stack[1]].Weld(shapes[stack[0]], False, False)  # a partial weld really happens
     raise RuntimeError("simulated failure after a partial weld")
@@ -249,6 +251,184 @@ def close_geo():
 
 
 conn.safe_call(close_geo)
+
+
+# E07+E06: failures part way through the exact-ID layer, transform, delete and import edits are undone as one step;
+# combine_shapes stops at its time budget. On fresh copies of colors.cdr and layers.cdr.
+from tools import layers as layer_tools  # noqa: E402
+from tools import shapes as shape_tools  # noqa: E402
+
+E7 = {}
+for stem in ("colors", "layers"):
+    E7[stem] = FX + rf"\e07_fail_{stem}.cdr"
+    shutil.copyfile(rf"C:\CorelMcpLab\templates\{stem}.cdr", E7[stem])
+    conn.safe_call(lambda path=E7[stem]: conn.app.OpenDocument(path))
+CO7, LA7 = E7["colors"], E7["layers"]
+
+
+def page_state(path, page=1):
+    """IDs, layers and bounds of every shape on a page, plus the layers' flags and names."""
+    def run():
+        doc, = find_documents(conn.app, path)
+        p = doc.Pages(page)
+        shapes = sorted((str(s.StaticID), layer.Name, round(s.LeftX, 6), round(s.BottomY, 6), round(s.RightX, 6),
+                         round(s.TopY, 6)) for layer in p.AllLayers for s in layer.Shapes)
+        flags = [(layer.Name, bool(layer.Visible), bool(layer.Printable), bool(layer.Editable)) for layer in p.AllLayers]
+        return shapes, flags, doc.ActivePage.Index
+    return conn.safe_call(run)["result"]
+
+
+co0, la0_7, la2_7 = page_state(CO7), page_state(LA7), page_state(LA7, 2)
+
+# transform_shapes: fail after the stretch and rotation (reading the bounds for move_to).
+original_edges, calls = geometry._edges, []
+
+
+def edges_then_fail(targets):
+    calls.append(1)
+    if len(calls) == 2:
+        raise RuntimeError("simulated failure after stretch and rotate")
+    return original_edges(targets)
+
+
+geometry._edges = edges_then_fail
+try:
+    r = geometry.transform_shapes(CO7, 1, ["4", "5"], scale=2, rotate=30, move_to={"x": 1}, unit="in")
+finally:
+    geometry._edges = original_edges
+report(not r.success and "simulated" in r.error and "page is unchanged" in r.error and page_state(CO7) == co0,
+       "transform_shapes: a failure after stretching and rotating is undone (bounds back):", r.error)
+
+
+# delete_shapes: the second layer's Delete fails after the first layer's shape is gone.
+class FailingDelete:
+    def __init__(self, selection):
+        self.selection = selection
+
+    def Delete(self):  # noqa: N802 (COM method name)
+        raise RuntimeError("simulated failure deleting on the second layer")
+
+
+original_range = shape_tools.shape_range
+ranges = []
+
+
+def range_then_fail(view, entries):
+    selection = original_range(view, entries)
+    ranges.append(view.name)
+    return FailingDelete(selection) if len(ranges) == 2 else selection
+
+
+shape_tools.shape_range = range_then_fail
+try:
+    r = shape_tools.delete_shapes(CO7, 1, ["4", "13"])
+finally:
+    shape_tools.shape_range = original_range
+report(not r.success and "simulated" in r.error and "page is unchanged" in r.error and page_state(CO7) == co0,
+       "delete_shapes: a failure after the first layer's deletion restores it:", r.error)
+
+
+# set_layer_properties: printable is set, then the rename fails.
+class NoRename:
+    def __init__(self, layer):
+        object.__setattr__(self, "layer", layer)
+
+    def __getattr__(self, name):
+        return getattr(self.layer, name)
+
+    def __setattr__(self, name, value):
+        if name == "Name":
+            raise RuntimeError("simulated rename failure")
+        setattr(self.layer, name, value)
+
+
+original_find = layer_tools._find_layer
+layer_tools._find_layer = lambda *args: NoRename(original_find(*args))
+try:
+    r = layer_tools.set_layer_properties(LA7, 1, "Art", printable=False, rename="Art 2")
+finally:
+    layer_tools._find_layer = original_find
+report(not r.success and "simulated" in r.error and page_state(LA7) == la0_7,
+       "set_layer_properties: printable set, then a failed rename: both undone:", r.error)
+
+# import_file: the import happens on a non-active page, then a failure; the import is undone, page 1 stays active.
+svg = FX + r"\e07_fail.svg"
+with open(svg, "w", encoding="utf-8") as handle:
+    handle.write('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>')
+original_new = shape_tools._top_level_new
+
+
+def new_then_fail(*args):
+    original_new(*args)
+    raise RuntimeError("simulated failure after the import")
+
+
+shape_tools._top_level_new = new_then_fail
+try:
+    r = shape_tools.import_file(LA7, 2, svg, layer="Art", x=1, y=1, unit="in")
+finally:
+    shape_tools._top_level_new = original_new
+report(not r.success and "simulated" in r.error and "page is unchanged" in r.error
+       and page_state(LA7, 2) == la2_7 and page_state(LA7)[2] == la0_7[2],
+       "import_file: a failure after importing onto page 2 is undone; the active page is restored:", r.error)
+
+# move_shapes_to_layer from a hidden layer, failing after the move: the shape returns and the layer is hidden again.
+original_order = layer_tools.undoable
+
+
+def undoable_then_fail(doc, page, label):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def wrapped():
+        with original_order(doc, page, label) as step:
+            yield step
+            raise RuntimeError("simulated failure at the end of the move")
+    return wrapped()
+
+
+layer_tools.undoable = undoable_then_fail
+try:
+    r = layer_tools.move_shapes_to_layer(LA7, 1, ["16", "15"], "Art")
+finally:
+    layer_tools.undoable = original_order
+report(not r.success and "simulated" in r.error and "page is unchanged" in r.error and page_state(LA7) == la0_7,
+       "move_shapes_to_layer: a failure after moving (one source hidden) is undone; Halftone hidden again:", r.error)
+
+# combine_shapes: the time budget runs out after two copies were made (undone).
+original_budget_class = geometry.Budget
+
+
+class LateBudget(original_budget_class):
+    """The budget expires at its third check, after two copies exist."""
+
+    checks = 0
+
+    def check(self, done, total, stage):
+        LateBudget.checks += 1
+        if LateBudget.checks == 3:
+            self.deadline = 0.0
+        super().check(done, total, stage)
+
+
+geometry.Budget = LateBudget
+try:
+    r = geometry.combine_shapes(CO7, 1, ["4", "5", "6"], "weld", keep_sources=True, preserve_order=False)
+finally:
+    geometry.Budget = original_budget_class
+report(not r.success and "Stopped after" in r.error and "(2 of 3)" in r.error and "page is unchanged" in r.error
+       and page_state(CO7) == co0, "combine_shapes: the time budget running out after two copies stops and undoes the "
+       "edit:", r.error)
+
+
+def close_e07():
+    for path in E7.values():
+        for doc in find_documents(conn.app, path):
+            doc.Dirty = False
+            doc.Close()
+
+
+conn.safe_call(close_e07)
 
 
 # Edits activate their document because CorelDRAW applies Document.Undo to the active document.

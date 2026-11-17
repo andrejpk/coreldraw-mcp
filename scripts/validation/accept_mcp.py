@@ -3,7 +3,8 @@ follow-up, the E17a structure cache, the E03 ink inventory, the E02+E05 color ed
 feedback (render_plates, merged export_page_proof_pdf, simulate_overprints) and E04+E11 find_shapes (filters,
 artifact presets, paging, selection, the named-shape cache fingerprint) and E13/E13b geometry and effect tools
 (offset_silhouette, combine_shapes, duplicate_shapes, separate_effect, convert_to_curves, apply_contour,
-inspect_shapes effect_details) on fresh template copies in <dir>\fx\e13b.
+inspect_shapes effect_details) on fresh template copies in <dir>\fx\e13b, and the E07+E06 layer,
+transform, arrange, delete, group, PowerClip, create and import tools on copies in <dir>\fx\e07.
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -115,17 +116,17 @@ check("list: detail adds layers with printable flags",
 
 # Mismatched-document refusal for active-document tools.
 b_shapes = direct(lambda: doc_of(B).Pages(1).Shapes.Count)
-r = call("create_rectangle", document_path=B, x=1, y=1, width=1, height=1)
+r = call("create_text_frame", document_path=B, x=10, y=10, width=20, height=10, text="x")
 check("mismatch: legacy edit on a non-active document refused", not r["success"] and "mismatch" in r["error"]
       and direct(lambda: doc_of(B).Pages(1).Shapes.Count) == b_shapes, r.get("error"))
-r = call("create_rectangle", x=1, y=1, width=1, height=1)
+r = call("create_text_frame", x=10, y=10, width=20, height=10, text="x")
 check("mismatch: legacy edit without document_path refused", not (isinstance(r, dict) and r.get("success")), r)
-r = call("get_layers", document_path=B)
+r = call("check_dimensions", expected_width=215.9, expected_height=279.4, document_path=B)
 check("mismatch: legacy read naming a non-active document refused", not r["success"] and "mismatch" in r["error"])
-r = call("get_layers")
+r = call("check_dimensions", expected_width=215.9, expected_height=279.4)
 check("legacy read defaults to the active document and names it", r["success"] and r["data"]["document_path"] == A)
-r = call("create_rectangle", document_path=A, x=1, y=1, width=0.5, height=0.5)
-check("legacy edit on the active document works, reports document and unit",
+r = call("create_shape", document_path=A, page_index=1, kind="rectangle", x=1, y=1, width=0.5, height=0.5, unit="in")
+check("exact edit (create_shape) works, reports document and unit",
       r["success"] and r["data"]["document_path"] == A and r["data"]["document_unit"] == "in", r.get("error"))
 rect = r["data"]["shape_id"] if r["success"] else None
 
@@ -134,7 +135,7 @@ for name, args in (
     ("add_guideline", {"document_path": A, "position": 25.4}),
     ("create_text_frame", {"document_path": A, "x": 25.4, "y": 25.4, "width": 50.8, "height": 12.7, "text": "unit"}),
     ("check_dimensions", {"document_path": A, "expected_width": 215.9, "expected_height": 279.4}),
-    ("align_shapes", {"document_path": A, "shape_ids": str(rect), "alignment": "left", "reference": "page"}),
+    ("arrange_shapes", {"document_path": A, "page_index": 1, "shape_ids": [rect], "align": "left", "reference": "page"}),
     ("export_png", {"document_path": A, "path": FX + r"\e08_unit.png", "dpi": 72}),
     ("find_shapes", {"document_path": A, "pages": [1], "filters": {"type": "text"}}),
 ):
@@ -190,8 +191,8 @@ r = call("save_document", document_path=SAVED)
 check("save: in place", r["success"] and r["data"]["saved_path"] == SAVED, r.get("error"))
 
 # Close
-r = call("create_rectangle", document_path=B, x=2, y=2, width=0.5, height=0.5)
-check("setup: make the active document dirty", r["success"] and direct(lambda: doc_of(B).Dirty), r.get("error"))
+r = call("create_shape", document_path=B, page_index=1, kind="rectangle", x=2, y=2, width=0.5, height=0.5, unit="in")
+check("setup: make the document dirty", r["success"] and direct(lambda: doc_of(B).Dirty), r.get("error"))
 r = call("close_document", document_path=B)
 check("close: dirty document refused", not r["success"] and direct(lambda: bool(find_documents(conn.app, B))),
       r.get("error"))
@@ -452,7 +453,7 @@ new_ids = set(ids(inv)) - set(ids(base)) - {r1, r2}
 check("cache, MCP edit: a duplicate made through the server appears", r["success"] and len(new_ids) == 1
       and inv == truth(ST), r.get("error") or new_ids)
 dup = next(iter(new_ids), None)
-r = call("delete_shape_by_id", document_path=ST, page_index=1, shape_id=dup)
+r = call("delete_shapes", document_path=ST, page_index=1, shape_ids=[dup])
 inv = mcp_inventory(ST)
 check("cache, MCP edit: a shape deleted through the server disappears", r["success"] and dup not in ids(inv)
       and inv == truth(ST), r.get("error"))
@@ -992,7 +993,8 @@ check("export_page_proof_pdf: whole page names the omitted hidden-but-printable 
 
 # Seeded fault: a white object sticking out of the 186 C circle (x 3.5-9.5 in).
 r = call("open_document", path=SEED, activate=True)
-created = call("create_rectangle", document_path=SEED, x=9.3, y=12.0, width=0.5, height=0.5)
+created = call("create_shape", document_path=SEED, page_index=1, kind="rectangle", x=9.3, y=12.0, width=0.5,
+               height=0.5, unit="in")
 seed_id = created["data"]["shape_id"] if created["success"] else None
 filled = call("set_fill", document_path=SEED, page_index=1, shape_ids=[seed_id], color="PANTONE Trans. White") \
     if seed_id else {"success": False}
@@ -1598,5 +1600,432 @@ check("catalog: offset_silhouette, combine_shapes, duplicate_shapes, separate_ef
        "apply_contour"} <= listed13 and not {"boolean_operation", "weld_copies_by_id", "weld_consecutive_shapes",
                                              "break_contour_apart", "inspect_contours", "duplicate_shape_by_id",
                                              "duplicate_shapes_by_id", "convert_text_to_curves"} & listed13)
+
+# E07+E06: layers, transform/arrange, delete, group/PowerClip, create, import (exact IDs, one undo step) --------
+E7 = Path(FX) / "e07"
+for leftover in call("list_documents")["data"]["documents"]:
+    if str(leftover.get("document_path") or "").lower().startswith(str(E7).lower() + "\\"):
+        call("close_document", document_path=leftover["document_path"], discard_changes=True)
+shutil.rmtree(E7, ignore_errors=True)
+E7.mkdir(parents=True, exist_ok=True)
+F7 = {}
+for stem in ("layers", "colors", "structure", "effects", "text_runs"):
+    shutil.copyfile(TEMPLATES / f"{stem}.cdr", E7 / f"{stem}.cdr")
+    F7[stem] = str(E7 / f"{stem}.cdr")
+    assert call("open_document", path=F7[stem])["success"], stem
+LY, C7, S7, X7, T7 = (F7[k] for k in ("layers", "colors", "structure", "effects", "text_runs"))
+
+
+def layers_of(path, page=1):
+    r = call("list_layers", document_path=path, pages=[page])
+    assert r["success"], r
+    return {(x["name"], x["master"]): x for x in r["data"]["pages"][0]["layers"]}
+
+
+def layer_state(path, name, page=1, master=False):
+    return layers_of(path, page)[(name, master)]
+
+
+def boxes(r):
+    return {x["id"]: x["bounds"] for x in (r.get("data") or {}).get("shapes", [])}
+
+
+def near(a, b, tol=1e-4):
+    return a is not None and b is not None and len(a) == len(b) and all(abs(x - y) <= tol for x, y in zip(a, b))
+
+
+def stack_of(path, layer, page=1):
+    """Top-level IDs of a layer, front first (inspect_shapes z_order)."""
+    r = call("inspect_shapes", document_path=path, page_index=page, layer_name=layer, fields=["z_order"])
+    return [s["shape_id"] for s in sorted((s for s in r["data"]["shapes"] if not s.get("parent_id")),
+                                          key=lambda s: s["z_order"])]
+
+
+# list_layers
+r = call("list_layers", document_path=LY)
+d = r.get("data") or {}
+p1 = {(x["name"], x["master"]): x for x in d["pages"][0]["layers"]} if r["success"] else {}
+check("list_layers: every page, flags, master, counts, readable color", r["success"] and len(d["pages"]) == 3
+      and p1[("Locked", False)]["locked"] and not p1[("Halftone", False)]["visible"]
+      and p1[("Halftone", False)]["printable"] and p1[("Master Marks", True)]["objects"] == 1
+      and all(str(x["color"]).startswith("#") for x in p1.values()) and d["pages"][0]["page_name"] == "Front"
+      and d["dirty"] is False and d["active_layer"]["name"], r.get("error") or p1.get(("Master Marks", True)))
+names = [x["name"] for x in d["pages"][0]["layers"]] if r["success"] else []
+check("list_layers: stacking order, front first (newer local layers above older; masters where they stack)",
+      names.index("Locked") < names.index("Art") < names.index("Master Marks"), names)
+r = call("list_layers", document_path=LY, pages=[2])
+p2 = {x["name"]: x for x in r["data"]["pages"][0]["layers"]} if r["success"] else {}
+check("list_layers: pages=[2] only, page-specific flags", r["success"] and len(r["data"]["pages"]) == 1
+      and not p2["Ink A"]["visible"] and not p2["Ink A"]["printable"], r.get("error"))
+r = call("list_layers", document_path=LY, pages=[4])
+check("list_layers: out-of-range page refused", not r["success"], r.get("error"))
+grp = layer_state(S7, "Groups")
+n_groups = len(call("inspect_shapes", document_path=S7, page_index=1, layer_name="Groups")["data"]["shapes"])
+check("list_layers: objects (top level) and objects_total (recursive) from the cache", grp["objects"] == 2
+      and grp["objects_total"] == n_groups == 12, (grp, n_groups))
+
+# set_layer_properties
+r = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Art", printable=False)
+d = r.get("data") or {}
+check("set_layer_properties: printable=false read back, dirty reported", r["success"] and d["layer"]["printable"] is False
+      and d["changed"] == ["printable"] and d["dirty"] is True and d["dirty_before"] is False
+      and layer_state(LY, "Art")["printable"] is False, r.get("error") or d)
+call("undo", document_path=LY)
+check("set_layer_properties: undo restores printable", layer_state(LY, "Art")["printable"] is True)
+r = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Art", visible=False, editable=False,
+         rename="Art 2")
+st = layers_of(LY)
+check("set_layer_properties: rename + visible + editable in one call", r["success"] and ("Art 2", False) in st
+      and not st[("Art 2", False)]["visible"] and st[("Art 2", False)]["locked"], r.get("error"))
+call("undo", document_path=LY)
+st = layers_of(LY)
+check("set_layer_properties: one undo step restores name and flags", ("Art", False) in st
+      and st[("Art", False)]["visible"] and not st[("Art", False)]["locked"], list(st))
+r = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Master Marks", visible=False)
+check("set_layer_properties: a master layer needs master=true", not r["success"] and "master=true" in r["error"]
+      and layer_state(LY, "Master Marks", master=True)["visible"], r.get("error"))
+r = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Master Marks", visible=False, master=True)
+check("set_layer_properties: master=true changes the master layer on every page", r["success"]
+      and r["data"]["applies_to"] == "every page"
+      and not any(layer_state(LY, "Master Marks", page=p, master=True)["visible"] for p in (1, 2, 3)), r.get("error"))
+call("undo", document_path=LY)
+r1 = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Art", rename="Ink A")
+r2 = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Guides", rename="G")
+r3 = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Ink B", visible=False)
+r4 = call("set_layer_properties", document_path=LY, page_index=1, layer_name="Art")
+check("set_layer_properties: duplicate name, special-layer rename, layer of another page, no change: refused",
+      not any(x["success"] for x in (r1, r2, r3, r4)) and "already exists" in r1["error"] and "special" in r2["error"]
+      and "Ink B" in r3["error"], [x.get("error") for x in (r1, r2, r3, r4)])
+
+# create_layer
+before_active = call("list_layers", document_path=LY)["data"]["active_layer"]
+r = call("create_layer", document_path=LY, page_index=2, name="Cut", color="#FF0000", printable=False)
+p2 = layers_of(LY, 2)
+after_active = call("list_layers", document_path=LY)["data"]["active_layer"]
+check("create_layer: on an exact (non-active) page, on top, color and flags read back, active layer kept",
+      r["success"] and ("Cut", False) in p2 and p2[("Cut", False)]["color"] == "#FF0000"
+      and not p2[("Cut", False)]["printable"] and ("Cut", False) not in layers_of(LY, 1)
+      and before_active == after_active, r.get("error") or (before_active, after_active))
+call("undo", document_path=LY)
+check("create_layer: undo removes it", ("Cut", False) not in layers_of(LY, 2))
+r = call("create_layer", document_path=LY, page_index=1, name="Art")
+check("create_layer: an existing name on the page is refused", not r["success"] and "already exists" in r["error"])
+r = call("create_layer", document_path=LY, page_index=1, name="Shared Marks", master=True)
+check("create_layer: master=true appears on every page", r["success"]
+      and all(("Shared Marks", True) in layers_of(LY, p) for p in (1, 2, 3)), r.get("error"))
+call("undo", document_path=LY)
+
+# move_shapes_to_layer (colors.cdr: Outlines above Process above Spots; 6 is above 4 on Spots)
+base7 = snapshot(C7)
+active0 = call("list_layers", document_path=C7)["data"]["active_layer"]
+r = call("move_shapes_to_layer", document_path=C7, page_index=1, shape_ids=["4", "13", "6"], layer_name="Outlines")
+check("move_shapes_to_layer: to the top, global stacking order kept (13 over 6 over 4), active layer unchanged",
+      r["success"] and stack_of(C7, "Outlines")[:3] == ["13", "6", "4"]
+      and [x["index"] for x in r["data"]["shapes"]] == [3, 1, 2]
+      and call("list_layers", document_path=C7)["data"]["active_layer"] == active0, r.get("error") or r.get("data"))
+call("undo", document_path=C7)
+check("move_shapes_to_layer: undo restores layers and order", snapshot(C7) == base7)
+r = call("move_shapes_to_layer", document_path=C7, page_index=1, shape_ids=["4", "13", "6"], layer_name="Outlines",
+         position="bottom")
+check("move_shapes_to_layer: to the bottom in order", r["success"] and stack_of(C7, "Outlines")[-3:] == ["13", "6", "4"],
+      r.get("error"))
+call("undo", document_path=C7)
+r = call("move_shapes_to_layer", document_path=LY, page_index=1, shape_ids=["16"], layer_name="Art")
+check("move_shapes_to_layer: from a hidden layer (CorelDRAW ignores those moves); the layer stays hidden",
+      r["success"] and stack_of(LY, "Art")[0] == "16" and not layer_state(LY, "Halftone")["visible"], r.get("error"))
+call("undo", document_path=LY)
+la7 = snapshot(LY)
+r1 = call("move_shapes_to_layer", document_path=LY, page_index=1, shape_ids=["14"], layer_name="Ink B")
+r2 = call("move_shapes_to_layer", document_path=LY, page_index=1, shape_ids=["14"], layer_name="Master Marks")
+r3 = call("move_shapes_to_layer", document_path=LY, page_index=1, shape_ids=["14"], layer_name="Locked")
+r4 = call("move_shapes_to_layer", document_path=LY, page_index=1, shape_ids=["17", "14"], layer_name="Art")
+check("move_shapes_to_layer: another page's layer, a master layer, a locked target, a locked source: refused",
+      not any(x["success"] for x in (r1, r2, r3, r4)) and "another page" in r1["error"] and "master" in r2["error"]
+      and "locked" in r3["error"] and "locked" in refused_reasons(r4).get("17", "") and snapshot(LY) == la7,
+      [x.get("error") for x in (r1, r2, r3, r4)])
+r1 = call("move_shapes_to_layer", document_path=S7, page_index=1, shape_ids=["4"], layer_name="PowerClip")
+r2 = call("move_shapes_to_layer", document_path=X7, page_index=1, shape_ids=["5"], layer_name="Overprint")
+check("move_shapes_to_layer: a group member and an effect-generated object refused per object",
+      "group" in refused_reasons(r1).get("4", "") and "effect" in refused_reasons(r2).get("5", ""),
+      (refused_reasons(r1), refused_reasons(r2)))
+
+# transform_shapes (colors.cdr is in inches; 4 is [1, 9, 2, 10])
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], move_to={"x": 50, "y": 100},
+         anchor="bottom_left", unit="mm")
+check("transform_shapes: move_to in mm on an inch document, bottom_left anchor", r["success"]
+      and near(boxes(r)["4"], [50, 100, 75.4, 125.4]) and r["data"]["unit"] == "mm", r.get("error") or boxes(r))
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], move_to={"x": 3}, anchor="top_right",
+         unit="in")
+check("transform_shapes: move_to x only, top_right anchor (y kept)", r["success"]
+      and near(boxes(r)["4"], [2, 100 / 25.4, 3, 125.4 / 25.4]), boxes(r))
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], move_by={"dx": 36, "dy": -72}, unit="pt")
+check("transform_shapes: move_by in pt (bounds reported in pt)", r["success"] and r["data"]["unit"] == "pt"
+      and near([v / 72 for v in boxes(r)["4"]], [2.5, 100 / 25.4 - 1, 3.5, 125.4 / 25.4 - 1]), boxes(r))
+for _ in range(3):
+    call("undo", document_path=C7)
+check("transform_shapes: three moves, three undos restore the page", snapshot(C7) == base7)
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["5"], size={"width": 2}, anchor="top_left",
+         unit="in")
+check("transform_shapes: size width only keeps the aspect ratio about the top_left anchor", r["success"]
+      and near(boxes(r)["5"], [2.2, 8, 4.2, 10]), boxes(r))
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["6"], scale={"x": 2, "y": 0.5})
+check("transform_shapes: scale x2 / y0.5 about the center (no unit needed)", r["success"]
+      and near(boxes(r)["6"], [2.9, 9.25, 4.9, 9.75]), boxes(r))
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["7"], size={"width": 1, "height": 2},
+         unit="in", anchor="bottom_center")
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["7"], rotate=90)
+check("transform_shapes: rotate 90 about the center swaps the box; rotation_angle read back", r["success"]
+      and near(boxes(r)["7"], [4.1, 9.5, 6.1, 10.5]) and r["data"]["shapes"][0]["rotation_angle"] == 90, r.get("data"))
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["8", "9"], scale=2, anchor="bottom_left",
+         as_group=True)
+check("transform_shapes: as_group scales the pair about their combined bottom_left", r["success"]
+      and near(r["data"]["group_bounds"], [1, 7.5, 5.4, 9.5]) and near(boxes(r)["9"], [3.4, 7.5, 5.4, 9.5]),
+      r.get("data"))
+for _ in range(5):
+    call("undo", document_path=C7)
+check("transform_shapes: undo after size, scale, size, rotate, group scale restores the page", snapshot(C7) == base7)
+r = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["10", "11"], size={"height": 0.5}, rotate=45,
+         move_to={"x": 4, "y": 4}, anchor="center", unit="in")
+d = r.get("data") or {}
+check("transform_shapes: size + rotate + move in one call, every center at move_to", r["success"]
+      and all(near([(b[0] + b[2]) / 2, (b[1] + b[3]) / 2], [4, 4]) for b in boxes(r).values()), r.get("error") or d)
+call("undo", document_path=C7)
+check("transform_shapes: that combined transform is one undo step", snapshot(C7) == base7)
+r = call("transform_shapes", document_path=T7, page_index=1, shape_ids=["4"], scale=2, anchor="bottom_left")
+b0, b1 = (r.get("data") or {}).get("shapes", [{}])[0].get("bounds_before"), boxes(r).get("4")
+check("transform_shapes: artistic text scales with its characters", r["success"]
+      and abs((b1[2] - b1[0]) - 2 * (b0[2] - b0[0])) < 1e-3, r.get("error") or (b0, b1))
+call("undo", document_path=T7)
+r = call("transform_shapes", document_path=S7, page_index=1, shape_ids=["15"], move_by={"dx": 0.5}, unit="in")
+check("transform_shapes: a nested group moves as a whole", r["success"], r.get("error"))
+call("undo", document_path=S7)
+st7 = snapshot(S7)
+r1 = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], move_by={"dx": 1})
+r2 = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], move_by={"dx": 1}, move_to={"x": 1},
+          unit="in")
+r3 = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"])
+r4 = call("transform_shapes", document_path=C7, page_index=1, shape_ids=["4"], scale=0)
+check("transform_shapes: missing unit, move_to with move_by, no operation, zero scale: refused",
+      not any(x["success"] for x in (r1, r2, r3, r4)) and "unit" in r1["error"], [x.get("error") for x in (r1, r2, r3, r4)])
+r1 = call("transform_shapes", document_path=LY, page_index=1, shape_ids=["17", "14"], rotate=10)
+r2 = call("transform_shapes", document_path=S7, page_index=1, shape_ids=["15", "14"], rotate=10)
+r3 = call("transform_shapes", document_path=X7, page_index=1, shape_ids=["6", "5"], rotate=10)
+r4 = call("transform_shapes", document_path=LY, page_index=1, shape_ids=["22"], rotate=10)
+clip16 = next(s["shape_id"] for s in call("inspect_shapes", document_path=S7, page_index=1)["data"]["shapes"]
+              if s.get("powerclip_container_id") == "21")
+r5 = call("transform_shapes", document_path=S7, page_index=1, shape_ids=[clip16], rotate=10)
+check("transform_shapes: locked, inside a targeted group, effect group, effect-generated, master, PowerClip content: "
+      "refused per object, nothing changed",
+      "locked" in refused_reasons(r1).get("17", "") and "14" not in refused_reasons(r1)
+      and "also a target" in refused_reasons(r2).get("14", "") and "effect group" in refused_reasons(r3).get("6", "")
+      and "effect" in refused_reasons(r3).get("5", "") and "master" in refused_reasons(r4).get("22", "")
+      and "PowerClip" in refused_reasons(r5).get(clip16, "") and snapshot(LY) == la7 and snapshot(S7) == st7,
+      [refused_reasons(x) for x in (r1, r2, r3, r4, r5)])
+
+# arrange_shapes (Spots: 4 [1,9,2,10], 5 [2.2..], 6 [3.4..]; 9-11 one row lower)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4", "9", "13"], align="left")
+check("arrange_shapes: align left to the selection", r["success"]
+      and {b[0] for b in boxes(r).values()} == {1.0} and r["data"]["reference_bounds"][0] == 1.0, boxes(r))
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4", "5"], align="top", reference="page", unit="mm")
+check("arrange_shapes: align top to the page, bounds in mm", r["success"]
+      and all(abs(b[3] - 279.4) < 1e-3 for b in boxes(r).values()), boxes(r))
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4", "5"], align="middle", reference="9")
+mid9 = 8.0
+check("arrange_shapes: align middle to a reference shape (which stays)", r["success"]
+      and all(abs((b[1] + b[3]) / 2 - mid9) < 1e-6 for b in boxes(r).values()), boxes(r))
+call("undo", document_path=C7)
+check("arrange_shapes: undo restores", snapshot(C7) == base7)
+call("transform_shapes", document_path=C7, page_index=1, shape_ids=["5"], move_by={"dx": -0.9}, unit="in")
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["6", "4", "5"], distribute="horizontal")
+b = boxes(r)
+gaps = [round(b["5"][0] - b["4"][2], 6), round(b["6"][0] - b["5"][2], 6)] if r["success"] else []
+check("arrange_shapes: distribute horizontal, equal gaps, outermost fixed", r["success"] and len(set(gaps)) == 1
+      and b["4"][0] == 1.0 and b["6"][2] == 4.4, (gaps, b))
+call("undo", document_path=C7)
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4", "9", "13"], distribute="vertical",
+         spacing=0.25, unit="in")
+b = boxes(r)
+check("arrange_shapes: distribute vertical with a fixed 0.25 in gap from the top shape", r["success"]
+      and abs(b["4"][1] - b["9"][3] - 0.25) < 1e-6 and abs(b["9"][1] - b["13"][3] - 0.25) < 1e-6
+      and b["4"][3] == 10.0, b)
+call("undo", document_path=C7)
+check("arrange_shapes: undo after two distributions restores", snapshot(C7) == base7)
+spots = stack_of(C7, "Spots")  # 12 front ... 4 back
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4", "6"], z_order="front")
+z = {x["id"]: x for x in (r.get("data") or {}).get("shapes", [])}
+check("arrange_shapes: z_order front keeps relative order (6 over 4), neighbours reported", r["success"]
+      and stack_of(C7, "Spots")[:2] == ["6", "4"] and z["6"]["above"] is None and z["4"]["above"] == "6"
+      and z["4"]["below"] == "12", z)
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["12", "10"], z_order="back")
+check("arrange_shapes: z_order back keeps relative order", r["success"] and stack_of(C7, "Spots")[-2:] == ["12", "10"])
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["8"], z_order="forward")
+z = r["data"]["shapes"][0] if r["success"] else {}
+check("arrange_shapes: forward one step swaps with the neighbour above", r["success"] and z["above"] == "10"
+      and z["below"] == "9" and stack_of(C7, "Spots") == ["12", "11", "10", "8", "9", "7", "6", "5", "4"], z)
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["11", "12"], z_order="backward")
+check("arrange_shapes: backward one step for two adjacent shapes keeps them together",
+      r["success"] and stack_of(C7, "Spots")[:3] == ["10", "12", "11"], stack_of(C7, "Spots"))
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["12", "4"], z_order="below", reference="8")
+check("arrange_shapes: below a reference shape keeps relative order",
+      r["success"] and stack_of(C7, "Spots") == ["11", "10", "9", "8", "12", "4", "7", "6", "5"], stack_of(C7, "Spots"))
+call("undo", document_path=C7)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4"], z_order="above", reference="10")
+check("arrange_shapes: above a reference shape", r["success"] and r["data"]["shapes"][0]["below"] == "10"
+      and r["data"]["shapes"][0]["above"] == "11", r.get("data"))
+call("undo", document_path=C7)
+check("arrange_shapes: undo after every z_order restores", snapshot(C7) == base7 and stack_of(C7, "Spots") == spots)
+r = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4"], z_order="above", reference="13")
+check("arrange_shapes: above a shape of another layer is refused", not r["success"] and "same layer" in r["error"],
+      r.get("error"))
+r = call("arrange_shapes", document_path=S7, page_index=1, shape_ids=["5"], z_order="back")
+check("arrange_shapes: z_order inside a group reorders its children", r["success"]
+      and r["data"]["shapes"][0]["above"] == "4" and r["data"]["shapes"][0]["below"] is None, r.get("data"))
+call("undo", document_path=S7)
+r1 = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4"], align="left", z_order="front")
+r2 = call("arrange_shapes", document_path=C7, page_index=1, shape_ids=["4"], z_order="above")
+check("arrange_shapes: two operations, above without a reference: refused", not r1["success"] and not r2["success"])
+
+# delete_shapes
+r = call("delete_shapes", document_path=C7, page_index=1, shape_ids=["4", "13", "19"])
+check("delete_shapes: three shapes on three layers in one call", r["success"]
+      and not {"4", "13", "19"} & page_ids(C7) and r["data"]["deleted_ids"] == ["4", "13", "19"], r.get("error"))
+call("undo", document_path=C7)
+check("delete_shapes: one undo restores all three", snapshot(C7) == base7)
+r = call("delete_shapes", document_path=S7, page_index=1, shape_ids=["6"])
+check("delete_shapes: a group with its members", r["success"] and r["data"]["members_deleted"] == 2
+      and not {"4", "5", "6"} & page_ids(S7), r.get("data"))
+call("undo", document_path=S7)
+r1 = call("delete_shapes", document_path=LY, page_index=1, shape_ids=["14", "17"])
+r2 = call("delete_shapes", document_path=S7, page_index=1, shape_ids=["6", "4"])
+r3 = call("delete_shapes", document_path=X7, page_index=1, shape_ids=["5"])
+check("delete_shapes: locked, member of a targeted group, effect-generated: refused, nothing deleted",
+      "locked" in refused_reasons(r1).get("17", "") and "also a target" in refused_reasons(r2).get("4", "")
+      and "effect" in refused_reasons(r3).get("5", "") and snapshot(LY) == la7 and snapshot(S7) == st7)
+
+# group_shapes / powerclip
+r = call("group_shapes", document_path=C7, page_index=1, shape_ids=["5", "10", "7"], name="trio")
+d = r.get("data") or {}
+check("group_shapes: group in stacking order at the topmost member's place", r["success"]
+      and d["member_ids"] == ["10", "7", "5"] and stack_of(C7, "Spots")[:3] == ["12", "11", d["group_id"]], d)
+call("undo", document_path=C7)
+check("group_shapes: undo", snapshot(C7) == base7)
+r = call("group_shapes", document_path=C7, page_index=1, shape_ids=["5", "13"])
+check("group_shapes: shapes on two layers refused", not r["success"] and refused_reasons(r), r.get("error"))
+r = call("group_shapes", document_path=S7, page_index=1, shape_ids=["6"], action="ungroup")
+check("group_shapes: ungroup gives the direct children", r["success"]
+      and sorted(r["data"]["groups"][0]["child_ids"]) == ["4", "5"] and "6" not in page_ids(S7), r.get("data"))
+call("undo", document_path=S7)
+r = call("group_shapes", document_path=S7, page_index=1, shape_ids=["15"], action="ungroup_all")
+check("group_shapes: ungroup_all dissolves nested groups", r["success"]
+      and not {"15", "13", "11", "9"} & page_ids(S7) and {"7", "8", "10", "12", "14"} <= page_ids(S7), r.get("data"))
+call("undo", document_path=S7)
+check("group_shapes: undo restores the groups", snapshot(S7) == st7)
+r = call("create_shape", document_path=C7, page_index=1, kind="ellipse", x=1, y=1, width=3, height=3, unit="in",
+         layer="Spots")
+cont = r["data"]["shape_id"] if r["success"] else None
+r = call("powerclip", document_path=C7, page_index=1, container_id=cont, shape_ids=["4", "6"])
+check("powerclip: place two shapes into a new container", r["success"]
+      and sorted(r["data"]["content_ids"]) == ["4", "6"], r.get("error") or r.get("data"))
+r = call("powerclip", document_path=C7, page_index=1, container_id=cont, action="extract")
+check("powerclip: extract returns them", r["success"] and sorted(r["data"]["extracted_ids"]) == ["4", "6"],
+      r.get("error") or r.get("data"))
+for _ in range(3):
+    call("undo", document_path=C7)
+check("powerclip: create, place and extract undo in three steps", snapshot(C7) == base7)
+inside21 = sorted(s["shape_id"] for s in call("inspect_shapes", document_path=S7, page_index=1)["data"]["shapes"]
+                  if s.get("powerclip_container_id") == "21" and s.get("parent_id") == "21")
+r = call("powerclip", document_path=S7, page_index=1, container_id="21", action="extract")
+check("powerclip: extract a fixture container (rect, text, group)", r["success"] and len(inside21) == 3
+      and sorted(r["data"]["extracted_ids"]) == inside21, (inside21, r.get("data")))
+call("undo", document_path=S7)
+check("powerclip: undo puts them back", snapshot(S7) == st7)
+r = call("powerclip", document_path=S7, page_index=1, container_id="21", shape_ids=["4"])
+check("powerclip: a group member is refused", not r["success"] and "group" in refused_reasons(r).get("4", ""))
+
+# create_shape
+r = call("create_shape", document_path=C7, page_index=1, kind="rectangle", x=10, y=20, width=30, height=15, unit="mm",
+         layer="Process", fill="PANTONE 485 C", outline="none", corner_radius=2, name="mm_rect")
+d = r.get("data") or {}
+check("create_shape: rectangle in mm on an inch document, exact layer, spot fill, no outline", r["success"]
+      and near(d["bounds"], [10, 20, 40, 35]) and d["layer"] == "Process" and d["fill"]["ink"] == "PANTONE 485 C"
+      and d["outline"]["kind"] == "none", r.get("error") or d)
+r = call("create_shape", document_path=C7, page_index=1, kind="ellipse", x=1, y=1, width=2, height=1, unit="in",
+         outline="CMYK 0/0/0/100", outline_width=2, layer="Spots")
+check("create_shape: ellipse bounds, outline color and width in the unit", r["success"]
+      and near(r["data"]["bounds"], [1, 1, 3, 2]) and abs(r["data"]["outline"]["width_pt"] - 144) < 1e-3,
+      r.get("error") or r.get("data"))
+r = call("create_shape", document_path=C7, page_index=1, kind="line", x=72, y=72, x2=144, y2=0, unit="pt",
+         layer="Spots")
+check("create_shape: line from x,y to x2,y2 in pt", r["success"] and near(r["data"]["bounds"], [72, 0, 144, 72]),
+      r.get("data"))
+for _ in range(3):
+    call("undo", document_path=C7)
+check("create_shape: one undo step each", snapshot(C7) == base7)
+r1 = call("create_shape", document_path=LY, page_index=1, kind="rectangle", x=1, y=1, width=1, height=1, unit="in",
+          layer="Locked")
+r2 = call("create_shape", document_path=LY, page_index=1, kind="rectangle", x=1, y=1, width=1, height=1, unit="in",
+          layer="Ink B")
+r3 = call("create_shape", document_path=LY, page_index=1, kind="line", x=1, y=1, width=1, height=1, unit="in")
+r4 = call("create_shape", document_path=LY, page_index=1, kind="rectangle", x=1, y=1, width=1, height=1, unit="in",
+          fill="PANTONE 9999 Q")
+check("create_shape: locked layer, another page's layer, line with width, unknown spot: refused",
+      not any(x["success"] for x in (r1, r2, r3, r4)) and "locked" in r1["error"] and snapshot(LY) == la7,
+      [x.get("error") for x in (r1, r2, r3, r4)])
+r = call("create_shape", document_path=LY, page_index=3, kind="rectangle", x=1, y=1, width=1, height=1, unit="in")
+check("create_shape: default layer on a non-active page is that page's", r["success"]
+      and r["data"]["layer"] in ("Ink B", "Ink A") and r["data"]["page_index"] == 3, r.get("data"))
+call("undo", document_path=LY)
+
+# import_file (SVG and PNG onto page 2 of layers.cdr; page 1 stays active)
+svg = E7 / "box.svg"
+svg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50" viewBox="0 0 100 50">'
+               '<rect x="0" y="0" width="60" height="50" fill="#ff0000"/>'
+               '<circle cx="80" cy="25" r="20" fill="#0000ff"/></svg>', encoding="utf-8")
+from PIL import Image  # noqa: E402
+
+png = E7 / "green.png"
+Image.new("RGB", (40, 20), (0, 200, 0)).save(png)
+la2 = snapshot(LY, 2)
+r = call("import_file", document_path=LY, page_index=2, path=str(svg), layer="Art", x=1, y=2, width=3, unit="in")
+d = r.get("data") or {}
+check("import_file: SVG onto an exact non-active page and layer, positioned and sized (aspect kept)", r["success"]
+      and len(d["new_ids"]) == 1 and d["shapes"][0]["layer"] == "Art" and near(d["bounds"], [1, 2, 4, 3.5], 1e-3)
+      and d["active_page"] == 1 and set(d["new_ids"]) <= page_ids(LY, 2), r.get("error") or d)
+r2 = call("import_file", document_path=LY, page_index=2, path=str(png), layer="Ink A", height=10, unit="mm")
+d2 = r2.get("data") or {}
+check("import_file: PNG as a bitmap, height only keeps the aspect ratio", r2["success"]
+      and d2["shapes"][0]["type"] == 5 and abs(d2["bounds"][3] - d2["bounds"][1] - 10) < 1e-3
+      and abs(d2["bounds"][2] - d2["bounds"][0] - 20) < 1e-2, r2.get("error") or d2)
+call("undo", document_path=LY)
+call("undo", document_path=LY)
+check("import_file: each import is one undo step", snapshot(LY, 2) == la2)
+# (A malformed file is not tried here: CorelDRAW may answer it with a modal dialog on the shared instance.)
+r1 = call("import_file", document_path=LY, page_index=2, path=str(E7 / "missing.svg"))
+r2 = call("import_file", document_path=LY, page_index=1, path=str(svg), layer="Locked")
+r3 = call("import_file", document_path=LY, page_index=2, path=str(svg), x=1)
+check("import_file: missing file, locked layer, position without unit: refused, page unchanged",
+      not any(x["success"] for x in (r1, r2, r3)) and snapshot(LY, 2) == la2 and snapshot(LY) == la7,
+      [x.get("error") for x in (r1, r2, r3)])
+
+for path in F7.values():
+    r = call("close_document", document_path=path, discard_changes=True)
+    check(f"cleanup: close {Path(path).name}", r["success"], r.get("error"))
+listed7 = {tool.name for tool in asyncio.run(_catalog())}
+check("catalog: E07 tools added, 25 legacy shape/layer tools removed",
+      {"list_layers", "set_layer_properties", "create_layer", "move_shapes_to_layer", "transform_shapes",
+       "arrange_shapes", "delete_shapes", "group_shapes", "powerclip", "create_shape", "import_file",
+       "get_ui_selection"} <= listed7
+      and not {"get_layers", "get_page_layers", "set_layer_visible", "lock_layer", "set_page_layer_state",
+               "assign_to_layer", "set_shape_position", "set_shape_position_exact", "set_shape_size", "scale_shape",
+               "rotate_shape", "align_shapes", "distribute_shapes", "set_z_order", "delete_shape",
+               "delete_shape_by_id", "create_rectangle", "create_ellipse", "create_line", "import_svg",
+               "import_image", "ungroup_shapes"} & listed7, sorted(listed7))
 
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

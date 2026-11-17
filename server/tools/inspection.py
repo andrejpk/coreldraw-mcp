@@ -24,13 +24,16 @@ from core.structure import (
 )
 from core.targets import resolve_document, resolve_page
 from core.units import unit_name
-from tools.shapes import _static_id
 
 _CDR_NO_FILL = 0
 _CDR_UNIFORM_FILL = 1
 _CDR_NO_OUTLINE = 0
 InspectionField = Literal["name", "type", "z_order", "bounds", "effects", "fill", "outline",
                           "overprint_fill", "overprint_outline"]
+
+
+def _static_id(shape) -> str:
+    return str(shape.StaticID)
 
 
 def _exact_shapes(doc, page, shape_ids: list[str]):

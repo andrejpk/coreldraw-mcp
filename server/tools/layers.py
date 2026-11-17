@@ -1,252 +1,341 @@
-"""图层管理工具 — 创建/锁/显隐图层，形状图层分配"""
+"""Layers on exact pages: list them, set their flags or name, create them, and move exact shapes onto them.
+
+Page layers are addressed by page and exact name; master layers (shared by every page) only with master=true.
+Edits activate the document, are one undo step, read the result back and report the document's dirty flag
+(layer flags and names are saved with the document, so changing them marks it modified).
+"""
+
+from __future__ import annotations
+
+from contextlib import contextmanager
+from typing import Literal
 
 from core.connection import get_connection
 from core.models import ToolResult
-from core.targets import call_on_active, resolve_document, resolve_page
+from core.shapeops import (
+    ANY_TYPE,
+    EDIT_BUDGET_SECONDS,
+    Budget,
+    nested_refusals,
+    page_ids,
+    refusal,
+    target_layer,
+    undoable,
+)
+from core.structure import invalidate, page_layers, walk_layer
+from core.targets import describe, resolve_document, resolve_page
+from tools.colors import _com_shape, _edit, _RefusedError
+
+_FLAGS = {"visible": "Visible", "printable": "Printable", "editable": "Editable"}
 
 
-def _find_shape(shape_id: str):
-    """按名称或 StaticID 查找形状"""
-    conn = get_connection()
-    doc = conn.app.ActiveDocument
-    if not doc:
-        return None
-    target = str(shape_id)
+def _hex(layer):
     try:
-        shapes = doc.ActivePage.Shapes
-        try:
-            return shapes(shape_id)
-        except Exception:
-            for s in shapes:
-                try:
-                    if str(s.StaticID) == target or s.Name == target:
-                        return s
-                except Exception:
-                    continue
-        return None
+        return layer.Color.HexValue
     except Exception:
         return None
 
 
-def create_layer(document_path: str, name: str, color: str = "") -> ToolResult:
-    """创建新图层。color 用于图层标识（激光机识别），如 'red' / 'blue'。
+def _state(layer) -> dict:
+    state = {"name": layer.Name, "master": bool(layer.Master)}
+    state.update({key: bool(getattr(layer, attribute)) for key, attribute in _FLAGS.items()})
+    if layer.IsSpecialLayer:
+        state["special"] = True
+    state["locked"] = not state["editable"]
+    return state
 
-    Active document only (document_path).
+
+def _pages(doc, pages):
+    count = doc.Pages.Count
+    if pages is None:
+        return list(range(1, count + 1))
+    if not isinstance(pages, list) or not pages or not all(isinstance(p, int) and 1 <= p <= count for p in pages):
+        raise ValueError(f"pages must be a list of page indexes between 1 and {count}")
+    return sorted(set(pages))
+
+
+def list_layers(document_path: str, pages: list[int] | None = None) -> ToolResult:
+    """List each page's layers (or pages=[...], one-based) of an exact document, front first, masters
+    where they stack. Read-only.
+
+    Per layer: name, master (shared by every page), special (guides/desktop/grid), visible, printable,
+    editable/locked, color (#RRGGBB), objects (top level), objects_total (with group members and PowerClip
+    contents). Also the active layer and the dirty flag.
     """
     conn = get_connection()
 
-    def _create():
-        page = conn.app.ActiveDocument.ActivePage
-        layer = page.CreateLayer(name)
-        # Ensure layer is visible and printable (X6 defaults can vary)
-        for attr in ("Visible", "Printable", "Editable"):
-            try:
-                setattr(layer, attr, True)
-            except Exception:
-                pass
-        if color:
-            try:
-                layer.Color = color
-            except Exception:
-                pass
-        return {"name": name, "color": color, "visible": True, "editable": True}
+    def read():
+        target = resolve_document(conn.app, document_path)
+        doc = target.doc
+        out = []
+        for index in _pages(doc, pages):
+            page = resolve_page(doc, index)
+            layers = []
+            for view in page_layers(doc, page):
+                layer = view.layer
+                entry = {"name": view.name, "master": bool(view.master), "visible": bool(view.visible),
+                         "printable": bool(view.printable), "editable": bool(view.editable),
+                         "locked": not view.editable, "color": _hex(layer),
+                         "objects": sum(1 for e in view.structure.entries if len(e.path) == 1),
+                         "objects_total": len(view.structure.entries)}
+                if layer.IsSpecialLayer:
+                    entry["special"] = True
+                layers.append(entry)
+            out.append({"page_index": index, "page_name": page.Name, "layers": layers})
+        active = doc.ActiveLayer
+        return {**describe(target), "dirty": bool(doc.Dirty), "active_page": doc.ActivePage.Index,
+                "active_layer": {"name": active.Name, "master": bool(active.Master)} if active is not None else None,
+                "pages": out}
 
-    result = call_on_active(conn, document_path, _create)
-    if result["success"]:
-        return ToolResult.ok(f"图层已创建: {name}", **result["result"])
-    return ToolResult.fail(result.get("error", "创建图层失败"))
+    result = conn.read_call(read)
+    return ToolResult.ok(**result["result"]) if result["success"] else ToolResult.fail(result["error"])
 
 
-def get_layers(document_path: str = "") -> ToolResult:
-    """获取当前页面的所有图层信息。
+@contextmanager
+def _layer_step(doc, label):
+    """One undo step for layer edits; a failure part way is undone."""
+    doc.BeginCommandGroup(label)
+    try:
+        yield
+    except BaseException:
+        doc.EndCommandGroup()
+        doc.Undo(1)
+        raise
+    doc.EndCommandGroup()
 
-    Reads the active document.
-    """
+
+def _find_layer(doc, page, name, master):
+    """The page's own layer (or, with master, the document's master layer) with exactly this name."""
+    local = [layer for layer in page.Layers if layer.Name == name and not layer.Master]
+    shared = [layer for layer in doc.MasterPage.Layers if layer.Name == name]
+    matches = shared if master else local
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f"{len(matches)} layers are named {name!r}; rename one in CorelDRAW first")
+    if not master and shared:
+        raise ValueError(f"{name!r} is a master layer (shared by every page); pass master=true")
+    if master and local:
+        raise ValueError(f"{name!r} is a layer of page {page.Index}, not a master layer; omit master")
+    names = [layer.Name for layer in (doc.MasterPage.Layers if master else page.Layers)]
+    where = "" if master else f" on page {page.Index}"
+    raise ValueError(f"No {'master ' if master else ''}layer named {name!r}{where}; layers: {names}")
+
+
+def _layer_edit(document_path, page_index, body) -> ToolResult:
     conn = get_connection()
 
-    def _list():
-        page = conn.app.ActiveDocument.ActivePage
-        layers_list = []
-        try:
-            for layer in page.Layers:
-                layer_info = {"name": layer.Name}
-                try:
-                    layer_info["visible"] = layer.Visible
-                except Exception:
-                    layer_info["visible"] = True
-                try:
-                    layer_info["editable"] = layer.Editable
-                except Exception:
-                    layer_info["editable"] = True
-                try:
-                    layer_info["locked"] = not layer.Editable
-                except Exception:
-                    layer_info["locked"] = False
-                try:
-                    c = layer.Color
-                    layer_info["color"] = int(c) if isinstance(c, int) else str(c)
-                except Exception:
-                    layer_info["color"] = ""
-                try:
-                    layer_info["shapes_count"] = layer.Shapes.Count
-                except Exception:
-                    layer_info["shapes_count"] = 0
-                layers_list.append(layer_info)
-        except Exception:
-            pass
-        return {"layers": layers_list, "count": len(layers_list)}
-
-    result = call_on_active(conn, document_path, _list, read_only=True)
-    if result["success"]:
-        return ToolResult.ok(f"共 {result['result']['count']} 个图层", **result["result"])
-    return ToolResult.fail(result.get("error", "获取图层列表失败"))
-
-
-def assign_to_layer(document_path: str, shape_id: str, layer_name: str) -> ToolResult:
-    """将形状移动到指定图层。
-
-    Active document only (document_path).
-    """
-    conn = get_connection()
-
-    def _assign():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        page = conn.app.ActiveDocument.ActivePage
-        target_layer = None
-        try:
-            target_layer = page.Layers(layer_name)
-        except Exception:
-            raise ValueError(f"未找到图层: {layer_name}")
-        target_layer.Activate()
-        # 将形状移动到目标图层
-        try:
-            shape.MoveToLayer(target_layer)
-        except Exception:
-            try:
-                shape.Layer = target_layer
-            except Exception:
-                raise RuntimeError(f"无法移动形状到图层: {layer_name}")
-        return {"shape_id": shape_id, "layer": layer_name}
-
-    result = call_on_active(conn, document_path, _assign)
-    if result["success"]:
-        return ToolResult.ok(f"形状已移至图层: {layer_name}", **result["result"])
-    return ToolResult.fail(result.get("error", "分配图层失败"))
-
-
-def set_layer_visible(document_path: str, layer_name: str, visible: bool) -> ToolResult:
-    """设置图层的可见性。
-
-    Active document only (document_path).
-    """
-    conn = get_connection()
-
-    def _set():
-        page = conn.app.ActiveDocument.ActivePage
-        try:
-            layer = page.Layers(layer_name)
-        except Exception:
-            raise ValueError(f"未找到图层: {layer_name}")
-        layer.Visible = visible
-        return {"layer": layer_name, "visible": visible}
-
-    result = call_on_active(conn, document_path, _set)
-    if result["success"]:
-        status = "可见" if visible else "隐藏"
-        return ToolResult.ok(f"图层 {layer_name} 已设为{status}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置图层可见性失败"))
-
-
-def lock_layer(document_path: str, layer_name: str) -> ToolResult:
-    """锁定图层，防止意外编辑。
-
-    Active document only (document_path).
-    """
-    conn = get_connection()
-
-    def _lock():
-        page = conn.app.ActiveDocument.ActivePage
-        try:
-            layer = page.Layers(layer_name)
-        except Exception:
-            raise ValueError(f"未找到图层: {layer_name}")
-        layer.Editable = False
-        return {"layer": layer_name, "locked": True}
-
-    result = call_on_active(conn, document_path, _lock)
-    if result["success"]:
-        return ToolResult.ok(f"图层已锁定: {layer_name}", **result["result"])
-    return ToolResult.fail(result.get("error", "锁定图层失败"))
-
-
-_LAYER_PROPERTIES = {"visible": "Visible", "editable": "Editable", "printable": "Printable"}
-
-
-def _layer_state(layer):
-    return {
-        "name": layer.Name,
-        "master": bool(layer.Master),
-        "special": bool(layer.IsSpecialLayer),
-        **{name: bool(getattr(layer, attr)) for name, attr in _LAYER_PROPERTIES.items()},
-    }
-
-
-def get_page_layers(document_path: str, page_index: int) -> ToolResult:
-    """Read layer visibility, editability, and printability on one page of an exact open document.
-
-    page_index is one-based. Shared master layers are identified in the result.
-    """
-    conn = get_connection()
-
-    def inspect():
-        doc, actual_path = resolve_document(conn.app, document_path)
-        page = resolve_page(doc, page_index)
-        return {
-            "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
-            "layers": [_layer_state(layer) for layer in page.AllLayers],
-        }
-
-    result = conn.read_call(inspect)
-    if result["success"]:
-        return ToolResult.ok(**result["result"])
-    return ToolResult.fail(result["error"])
-
-
-def set_page_layer_state(
-    document_path: str, page_index: int, layer_name: str, property_name: str, value: bool,
-    allow_page_guides: bool = False,
-) -> ToolResult:
-    """Set one flag (visible, editable, or printable) on an exact page-local layer and read back all flags.
-
-    document_path is any open document (from list_documents), page_index is one-based, and layer_name
-    must match exactly. Activates the document. editable=True unlocks the layer. Set allow_page_guides=True
-    to change printable on CorelDRAW's guideline layer for this page. Shared layers,
-    desktop/grid layers, and other edits to special layers are excluded.
-    """
-    conn = get_connection()
-    if property_name not in _LAYER_PROPERTIES:
-        return ToolResult.fail("property_name must be visible, editable, or printable")
-
-    def set_state():
+    def run():
         doc, actual_path = resolve_document(conn.app, document_path, activate=True)
         page = resolve_page(doc, page_index)
-        matches = [layer for layer in page.Layers if layer.Name == layer_name]
-        if len(matches) != 1:
-            raise ValueError(f"Expected exactly one layer named {layer_name!r} on page {page_index}")
-        layer = matches[0]
-        if layer.Master or layer.Page.Index != page_index:
-            raise ValueError("Only layers local to the requested page can be changed")
-        if layer.IsSpecialLayer and not (allow_page_guides and property_name == "printable" and layer.IsGuidesLayer):
-            raise ValueError("Special layers are excluded except for explicitly permitted page-guide printability")
-        setattr(layer, _LAYER_PROPERTIES[property_name], value)
-        return {"document_path": actual_path, "page_index": page_index, "layer": _layer_state(layer)}
+        try:
+            return {"document_path": actual_path, "page_index": page_index, **body(conn.app, doc, page)}
+        finally:
+            invalidate(actual_path)
 
-    result = conn.safe_call(set_state)
+    result = conn.safe_call(run)
     if not result["success"]:
         return ToolResult.fail(result["error"])
     data = result["result"]
-    if data["layer"][property_name] != value:
-        return ToolResult(success=False, error=f"CorelDRAW did not apply {property_name}={value}", data=data)
+    if data.get("verification_errors"):
+        return ToolResult(success=False, data=data, error="CorelDRAW did not apply every change (see "
+                                                          "verification_errors); the edit is one undo step (undo)")
     return ToolResult.ok(**data)
+
+
+def set_layer_properties(
+    document_path: str,
+    page_index: int,
+    layer_name: str,
+    visible: bool | None = None,
+    printable: bool | None = None,
+    editable: bool | None = None,
+    rename: str | None = None,
+    master: bool = False,
+) -> ToolResult:
+    """Set visible, printable, editable (false locks) and/or rename one exact layer; one undo step.
+
+    layer_name is a layer of page page_index; a master layer only with master=true (changes every page). Special
+    layers (guides, desktop, grid) take only visible and printable. Returns flags before and after (read back)
+    and the dirty flag (any change marks the document modified).
+    """
+    changes = {key: value for key, value in (("visible", visible), ("printable", printable), ("editable", editable))
+               if value is not None}
+    if any(not isinstance(value, bool) for value in changes.values()):
+        return ToolResult.fail("visible, printable and editable are true or false")
+    if not changes and rename is None:
+        return ToolResult.fail("Pass at least one of visible, printable, editable or rename")
+    if rename is not None and (not isinstance(rename, str) or not rename.strip()):
+        return ToolResult.fail("rename must be a non-empty name")
+
+    def body(app, doc, page):
+        layer = _find_layer(doc, page, layer_name, master)
+        if layer.IsSpecialLayer and (rename is not None or "editable" in changes):
+            raise ValueError(f"{layer_name!r} is a special CorelDRAW layer; only visible and printable can change")
+        if rename is not None and rename != layer_name:
+            taken = {other.Name for other in page.AllLayers} | {other.Name for other in doc.MasterPage.Layers}
+            if rename in taken:
+                raise ValueError(f"A layer named {rename!r} already exists on page {page_index}")
+        before = _state(layer)
+        dirty_before = bool(doc.Dirty)
+        with _layer_step(doc, "MCP set_layer_properties"):
+            for key, value in changes.items():
+                setattr(layer, _FLAGS[key], value)
+            if rename is not None:
+                layer.Name = rename
+        after = _state(layer)
+        problems = [{"property": key, "expected": value, "actual": after[key]} for key, value in changes.items()
+                    if after[key] != value]
+        if rename is not None and after["name"] != rename:
+            problems.append({"property": "name", "expected": rename, "actual": after["name"]})
+        data = {"layer": after, "before": before, "changed": sorted(k for k in after if after[k] != before.get(k)),
+                "applies_to": "every page" if master else f"page {page_index}", "dirty": bool(doc.Dirty),
+                "dirty_before": dirty_before}
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _layer_edit(document_path, page_index, body)
+
+
+def create_layer(
+    document_path: str,
+    page_index: int,
+    name: str,
+    master: bool = False,
+    visible: bool = True,
+    printable: bool = True,
+    editable: bool = True,
+    color: str | None = None,
+) -> ToolResult:
+    """Create a layer on top of page page_index, or a master layer (master=true, every page), with its
+    flags and an optional color "#RRGGBB". One undo step; the active layer stays. Refuses a name already used on
+    the page. Returns the layer read back.
+    """
+    if not isinstance(name, str) or not name.strip():
+        return ToolResult.fail("name must be a non-empty layer name")
+    if color is not None and not (isinstance(color, str) and len(color) == 7 and color.startswith("#")
+                                  and all(c in "0123456789abcdefABCDEF" for c in color[1:])):
+        return ToolResult.fail('color is "#RRGGBB"')
+
+    def body(app, doc, page):
+        taken = {other.Name for other in page.AllLayers} | {other.Name for other in doc.MasterPage.Layers}
+        if name in taken:
+            raise ValueError(f"A layer named {name!r} already exists on page {page_index}")
+        active = doc.ActiveLayer
+        with _layer_step(doc, "MCP create_layer"):
+            layer = (doc.MasterPage if master else page).CreateLayer(name)
+            for key, value in (("visible", visible), ("printable", printable), ("editable", editable)):
+                setattr(layer, _FLAGS[key], bool(value))
+            if color is not None:
+                layer.Color = app.CreateRGBColor(int(color[1:3], 16), int(color[3:5], 16), int(color[5:7], 16))
+            now = doc.ActiveLayer
+            if active is not None and now is not None and (now.Name, now.Master) != (active.Name, active.Master):
+                active.Activate()
+        state = _state(layer)
+        state["color"] = _hex(layer)
+        names = [other.Name for other in page.AllLayers]
+        problems = [{"property": key, "expected": value, "actual": state[key]}
+                    for key, value in (("visible", visible), ("printable", printable), ("editable", editable))
+                    if state[key] != bool(value)]
+        if color is not None and (state["color"] or "").upper() != color.upper():
+            problems.append({"property": "color", "expected": color, "actual": state["color"]})
+        if name not in names:
+            problems.append({"problem": f"the layer is not on page {page_index}"})
+        if active is not None and doc.ActiveLayer.Name != active.Name:
+            problems.append({"problem": "the active layer changed", "active_layer": doc.ActiveLayer.Name})
+        data = {"layer": state, "stack_index": names.index(name) + 1 if name in names else None,
+                "applies_to": "every page" if master else f"page {page_index}", "dirty": bool(doc.Dirty)}
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _layer_edit(document_path, page_index, body)
+
+
+def move_shapes_to_layer(
+    document_path: str,
+    page_index: int,
+    shape_ids: list[str],
+    layer_name: str,
+    position: Literal["top", "bottom"] = "top",
+) -> ToolResult:
+    """Move exact top-level shapes to the top or bottom of another layer of the same page; one undo step.
+
+    Relative stacking order is kept and the active layer does not change. Another page's layer, a master layer
+    or a locked layer is refused, as are sources on locked/master layers, inside groups, effect objects and
+    PowerClip contents. Returns each shape's previous layer and stacking index (1 = front), read back.
+    """
+    if position not in ("top", "bottom"):
+        return ToolResult.fail("position must be top or bottom")
+
+    def body(app, doc, page, targets):
+        layer = _move_target(doc, page, layer_name)
+        nested = nested_refusals(targets)
+        refused = []
+        for shape_id, (view, entry) in targets.items():
+            reason = (refusal(view, entry, consume=True, groups=True, bitmaps=True, types=ANY_TYPE)
+                      or nested.get(shape_id)
+                      or ("inside a group; move the group, or ungroup first" if entry.parent is not None else None))
+            if reason:
+                refused.append({"id": shape_id, "layer": view.name, "reason": reason})
+        if refused:
+            raise _RefusedError(refused)
+        order = sorted(shape_ids, key=lambda i: (targets[i][0].ordinal or 0, targets[i][0].structure.position[i]))
+        shapes = {shape_id: _com_shape(view, entry, shape_id) for shape_id, (view, entry) in targets.items()}
+        active = doc.ActiveLayer
+        active_key = (active.Name, bool(active.Master)) if active is not None else None
+        # CorelDRAW silently keeps shapes of a hidden layer where they are: show those layers during the move.
+        hidden = {view.ordinal: view.layer for view, _ in targets.values() if not view.visible}
+        budget = Budget(EDIT_BUDGET_SECONDS)
+        with undoable(doc, page, "MCP move_shapes_to_layer") as step:
+            for source in hidden.values():
+                source.Visible = True
+            try:
+                for done, shape_id in enumerate(reversed(order) if position == "top" else order):
+                    budget.check(done, len(order), "moving")
+                    shape = shapes[shape_id]
+                    if targets[shape_id][0].name != layer_name:
+                        shape.MoveToLayer(layer)
+                    if position == "top":
+                        shape.OrderToFront()
+                    else:
+                        shape.OrderToBack()
+            finally:
+                for source in hidden.values():
+                    source.Visible = False
+            if active is not None and (doc.ActiveLayer.Name, bool(doc.ActiveLayer.Master)) != active_key:
+                active.Activate()
+        tops = [e.shape_id for e in walk_layer(layer).entries if len(e.path) == 1]
+        expected = order
+        actual = tops[:len(order)] if position == "top" else tops[len(tops) - len(order):]
+        problems = []
+        if actual != expected:
+            problems.append({"problem": f"the shapes are not at the {position} of {layer_name!r} in their order",
+                             "expected": expected, "actual": actual})
+        if page_ids(doc, page) != step.before:
+            problems.append({"problem": "objects were added or removed"})
+        now = doc.ActiveLayer
+        if active_key is not None and (now.Name, bool(now.Master)) != active_key:
+            problems.append({"problem": "the active layer changed", "active_layer": now.Name})
+        data = {"layer": layer_name, "position": position, "layer_object_count": len(tops),
+                "shapes": [{"id": i, "from_layer": targets[i][0].name,
+                            "index": tops.index(i) + 1 if i in tops else None} for i in shape_ids]}
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _edit(document_path, page_index, shape_ids, body)
+
+
+def _move_target(doc, page, name):
+    if not any(layer.Name == name for layer in page.Layers):
+        elsewhere = [other.Index for other in (doc.Pages(i) for i in range(1, doc.Pages.Count + 1))
+                     if other.Index != page.Index and any(layer.Name == name for layer in other.Layers)]
+        if any(layer.Name == name for layer in doc.MasterPage.Layers):
+            raise ValueError(f"{name!r} is a master layer; move_shapes_to_layer moves shapes between layers of one "
+                             "page only")
+        if elsewhere:
+            raise ValueError(f"Layer {name!r} is not on page {page.Index} (it is on page {elsewhere}); "
+                             "move_shapes_to_layer does not move shapes to another page")
+    return target_layer(page, name)

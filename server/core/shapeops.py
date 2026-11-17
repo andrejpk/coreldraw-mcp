@@ -10,11 +10,15 @@
 * ``geometry(shape, unit)``: area with holes subtracted, perimeter, subpath count and bounds of a shape's
   display curve. ``Curve.Area`` adds the area of every subpath (a 4x4 square with a 2x2 hole reads 20, not 12),
   so holes are found by nesting: a subpath inside an odd number of other subpaths is a hole.
-* ``refusal(view, entry, ...)``: why an object cannot take part in an edit, or None.
+* ``refusal(view, entry, ...)``: why an object cannot take part in an edit, or None. ``nested_refusals(targets)``:
+  targets inside a group (or PowerClip) that is itself a target.
+* ``EDIT_BUDGET_SECONDS`` / ``Budget``: long multi-command edits stop (and are undone by ``undoable``) before the
+  bridge's 60 s cancel.
 """
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 
 from core.structure import CONTAINER_TYPES, EFFECT_GROUP_TYPES, page_layers
@@ -23,6 +27,9 @@ from core.units import convert, unit_name
 #: Shape types with a vector outline: rectangle, ellipse, curve, polygon, text, custom and perfect shapes.
 VECTOR_TYPES = frozenset({1, 2, 3, 4, 6, 21, 26})
 TEXT, BITMAP, GROUP = 6, 5, 7
+ANY_TYPE = range(0, 1000)  # ``refusal(types=ANY_TYPE)``: every shape type (groups, effects, clips still checked)
+#: Edits made of many CorelDRAW commands stop at this age and are undone (the bridge cancels at 60 s).
+EDIT_BUDGET_SECONDS = 35.0
 _GEOMETRY = ("array(@com.DisplayCurve.Length, @com.DisplayCurve.SubPaths.toarray().convert(array($item.Area, "
              "$item.PositionX, $item.PositionY, $item.SizeWidth, $item.SizeHeight, $item.StartNode.PositionX, "
              "$item.StartNode.PositionY)), @com.LeftX, @com.BottomY, @com.RightX, @com.TopY)")
@@ -86,7 +93,7 @@ def target_layer(page, name):
     if layer.Master or layer.IsSpecialLayer:
         raise ValueError(f"Layer {name!r} is a master or special layer; pass a layer of the page itself")
     if not layer.Editable:
-        raise ValueError(f"Layer {name!r} is locked; unlock it first (set_page_layer_state)")
+        raise ValueError(f"Layer {name!r} is locked; unlock it first (set_layer_properties editable=true)")
     return layer
 
 
@@ -117,6 +124,31 @@ def refusal(view, entry, *, consume: bool, groups: bool = False, effects: bool =
     if entry.type not in types:
         return f"shape type {entry.type} is not supported here"
     return None
+
+
+def nested_refusals(targets) -> dict:
+    """{id: reason} for targets inside a group or PowerClip that is also a target (the edit would apply twice)."""
+    out = {}
+    for shape_id, (view, entry) in targets.items():
+        for other_id, (other_view, other) in targets.items():
+            inside = len(other.path) < len(entry.path) and entry.path[:len(other.path)] == other.path
+            if other_id != shape_id and other_view is view and inside:
+                out[shape_id] = f"inside {other_id}, which is also a target"
+                break
+    return out
+
+
+class Budget:
+    """Raises TimeoutError once ``seconds`` have passed (inside ``undoable`` this undoes the edit)."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.deadline = time.perf_counter() + seconds
+
+    def check(self, done: int, total: int, stage: str) -> None:
+        if time.perf_counter() > self.deadline:
+            raise TimeoutError(f"Stopped after {self.seconds:.0f} s at {stage} ({done} of {total}) to stay under the "
+                               "bridge's 60 s limit; split shape_ids into smaller calls")
 
 
 def holds_powerclip(view, entry) -> bool:

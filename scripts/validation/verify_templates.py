@@ -79,10 +79,10 @@ def verify(template):
     by_id, unit = {}, None
     for page in template["pages"]:
         p = page["index"]
-        layers = tool("get_page_layers", document_path=path, page_index=p)
+        layers = tool("list_layers", document_path=path, pages=[p])
         if layers.get("success"):
             got = [(x.get("name"), x.get("visible"), x.get("printable"), x.get("editable"), x.get("master"))
-                   for x in layers["layers"]]
+                   for x in layers["pages"][0]["layers"]]
             want = [(x["name"], x["visible"], x["printable"], x["editable"], x["master"]) for x in page["layers"]]
             if got != want:
                 res["issues"].append({"page": p, "check": "layers", "want": want, "got": got})

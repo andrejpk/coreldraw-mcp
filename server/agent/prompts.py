@@ -42,7 +42,7 @@ SYSTEM_PROMPT = """你是一个自动化设计 Agent，能够通过工具调用�
       - 确认 OK 后继续下一步
    g. 印前处理：convert_to_curves（find_shapes 找到文字 ID）、get_ink_inventory（RGB/工艺色来源与预期印版）
    h. 导出 PDF：export_pdf(路径, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
-   i. 导出 DXF：先 assign_to_layer 整理图层，再 export_dxf(路径)
+   i. 导出 DXF：先 move_shapes_to_layer 整理图层，再 export_dxf(路径)
 3. **汇报结果**：成功数、失败数、调整项
 
 ## CorelDRAW 坐标系（必读，否则图形上下颠倒）

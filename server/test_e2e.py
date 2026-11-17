@@ -40,26 +40,14 @@ from tools.text import (
     set_text_content,
     check_text_overflow,
 )
-from tools.geometry import convert_to_curves
-from tools.shapes import (
-    create_rectangle,
-    create_ellipse,
-    align_shapes,
-    distribute_shapes,
-    set_z_order,
-    delete_shape,
-    rotate_shape,
-    ungroup_shapes,
-    scale_shape,
-    powerclip,
-    group_shapes,
-)
+from tools.geometry import arrange_shapes, convert_to_curves, transform_shapes
+from tools.shapes import create_shape, delete_shapes, group_shapes, powerclip
 from tools.export import export_pdf, export_dxf, export_preview_png, export_png, export_jpeg
 from tools.preflight import check_dimensions, check_text_overflow_all
 from tools.inks import get_ink_inventory
 from tools.find import find_shapes
 from tools.colors import set_fill, set_transparency
-from tools.layers import create_layer, assign_to_layer, get_layers
+from tools.layers import create_layer, list_layers, move_shapes_to_layer
 
 
 class _Doc:
@@ -214,17 +202,19 @@ def test_step7_layers(tr: TestResult):
     """步骤7：图层管理"""
     print("\n[步骤7] 图层管理…")
 
-    result1 = create_layer(DOC.path, "laser_red")
+    result1 = create_layer(DOC.path, 1, "laser_red", color="#FF0000")
     tr.step("创建图层 laser_red", result1)
 
-    result2 = create_layer(DOC.path, "laser_white")
+    result2 = create_layer(DOC.path, 1, "laser_white")
     tr.step("创建图层 laser_white", result2)
 
-    result3 = get_layers()
-    tr.step(f"获取图层列表", result3)
+    result3 = list_layers(DOC.path)
+    tr.step("获取图层列表", result3)
 
-    result4 = assign_to_layer(DOC.path, "placeholder_room", "laser_white")
-    tr.step(f"placeholder_room → laser_white", result4)
+    found = find_shapes(DOC.path, pages=[1], filters={"name": "placeholder_room"})
+    ids = [shape["id"] for shape in (found.data or {}).get("shapes", [])]
+    result4 = move_shapes_to_layer(DOC.path, 1, ids, "laser_white")
+    tr.step("placeholder_room → laser_white", result4)
 
 
 def test_step8_export(tr: TestResult, output_dir: str):
@@ -297,77 +287,30 @@ def test_step9_shapes_p0(tr: TestResult):
     print("\n[步骤9] P0 排版工具…")
 
     # 创建测试矩形
-    r1 = create_rectangle(DOC.path, 10, 10, 30, 20, 0)
-    tr.step("创建 rect_a (10,10 30×20)", r1)
-
-    r2 = create_rectangle(DOC.path, 50, 15, 30, 20, 0)
-    tr.step("创建 rect_b (50,15 30×20)", r2)
-
-    r3 = create_rectangle(DOC.path, 100, 5, 30, 20, 0)
-    tr.step("创建 rect_c (100,5 30×20)", r3)
-
-    conn = get_connection()
-    if not conn.status.connected:
-        tr.skip("P0 排版测试", "CorelDRAW 已断开")
-        return
-
-    # 获取新建矩形的 ID
-    def _get_new_ids():
-        ids = []
-        for s in conn.app.ActiveDocument.ActivePage.Shapes:
-            try:
-                if s.Name and s.Name.startswith("rect_"):
-                    ids.append({"name": s.Name, "id": str(s.StaticID)})
-            except Exception:
-                pass
-        return ids
-
-    id_result = conn.safe_call(_get_new_ids)
-    if not id_result["success"] or len(id_result["result"]) < 3:
-        tr.skip("P0 排版测试", "无法获取新建形状 ID")
-        return
-
-    new_ids = [item["id"] for item in id_result["result"]]
+    new_ids = []
+    for name, x, y in (("rect_a", 10, 10), ("rect_b", 50, 15), ("rect_c", 100, 5)):
+        r = create_shape(DOC.path, 1, "rectangle", x, y, "mm", width=30, height=20, name=name)
+        tr.step(f"创建 {name} ({x},{y} 30×20 mm)", r)
+        if not r.success:
+            tr.skip("P0 排版测试", "无法创建测试形状")
+            return
+        new_ids.append(r.data["shape_id"])
     global _test_shape_ids
     _test_shape_ids = new_ids
-    shape_ids_str = ",".join(new_ids)
 
-    # 测试对齐（selection 模式）
-    result = align_shapes(DOC.path, shape_ids_str, "left")
-    tr.step(f"左对齐 (3 shapes)", result)
+    tr.step("左对齐 (3 shapes)", arrange_shapes(DOC.path, 1, new_ids, align="left"))
+    tr.step("顶部对齐到页面", arrange_shapes(DOC.path, 1, new_ids, align="top", reference="page"))
+    tr.step("水平等距分布", arrange_shapes(DOC.path, 1, new_ids, distribute="horizontal"))
+    for action in ("front", "back", "forward"):
+        tr.step(f"层级 {action} {new_ids[0][:8]}", arrange_shapes(DOC.path, 1, new_ids[:1], z_order=action))
+    tr.step(f"旋转 45° {new_ids[1][:8]}", transform_shapes(DOC.path, 1, new_ids[1:2], rotate=45))
+    tr.step(f"放大 150% {new_ids[2][:8]}", transform_shapes(DOC.path, 1, new_ids[2:3], scale=1.5))
 
-    result = align_shapes(DOC.path, shape_ids_str, "top", reference="page")
-    tr.step(f"顶部对齐到页面", result)
-
-    # 测试分布
-    result = distribute_shapes(DOC.path, shape_ids_str, "horizontal")
-    tr.step(f"水平等距分布", result)
-
-    # 测试一级操作
-    result = set_z_order(DOC.path, new_ids[0], "front")
-    tr.step(f"置顶 {new_ids[0][:8]}", result)
-
-    result = set_z_order(DOC.path, new_ids[0], "back")
-    tr.step(f"置底 {new_ids[0][:8]}", result)
-
-    result = set_z_order(DOC.path, new_ids[0], "forward")
-    tr.step(f"上移一层 {new_ids[0][:8]}", result)
-
-    # 测试旋转
-    result = rotate_shape(DOC.path, new_ids[1], 45)
-    tr.step(f"旋转 45° {new_ids[1][:8]}", result)
-
-    # 测试等比缩放
-    result = scale_shape(DOC.path, new_ids[2], 1.5, keep_proportion=True)
-    tr.step(f"放大 150% {new_ids[2][:8]}", result)
-
-    # 测试群组 + 取消群组
-    result = group_shapes(DOC.path, f"{new_ids[0]},{new_ids[1]}")
-    tr.step(f"群组 rect_a + rect_b", result)
+    result = group_shapes(DOC.path, 1, new_ids[:2])
+    tr.step("群组 rect_a + rect_b", result)
     if result.success:
         group_id = result.data.get("group_id", "")
-        result_ug = ungroup_shapes(DOC.path, group_id)
-        tr.step(f"取消群组 {group_id[:8]}", result_ug)
+        tr.step(f"取消群组 {group_id[:8]}", group_shapes(DOC.path, 1, [group_id], action="ungroup"))
     else:
         tr.skip("群组/取消群组测试", "群组创建失败，跳过取消群组")
 
@@ -377,7 +320,7 @@ def test_step9_shapes_p0(tr: TestResult):
 
     # 测试删除（删除第三个矩形 rect_c）
     if len(new_ids) >= 3:
-        result = delete_shape(DOC.path, new_ids[2])
+        result = delete_shapes(DOC.path, 1, [new_ids[2]])
         tr.step(f"删除 rect_c {new_ids[2][:8]}", result)
 
     # 验证删除
@@ -396,7 +339,7 @@ def test_step10_advanced_p1(tr: TestResult):
     print("\n[步骤10] P1 增强工具…")
 
     # 测试渐变填充
-    r = create_rectangle(DOC.path, 10, 70, 40, 10, 0)
+    r = create_shape(DOC.path, 1, "rectangle", 10, 70, "mm", width=40, height=10)
     if r.success:
         rect_id = r.data.get("shape_id", "")
         result = set_fill(DOC.path, 1, [rect_id], fountain={"type": "linear", "angle": 90, "stops": [
@@ -406,7 +349,7 @@ def test_step10_advanced_p1(tr: TestResult):
         tr.skip("渐变填充测试", "无法创建测试形状")
 
     # 测试透明度
-    ell = create_ellipse(DOC.path, 100, 75, 10, 5)
+    ell = create_shape(DOC.path, 1, "ellipse", 90, 70, "mm", width=20, height=10)
     if ell.success:
         ell_id = ell.data.get("shape_id", "")
         result = set_transparency(DOC.path, 1, [ell_id], 50)
@@ -437,12 +380,12 @@ def test_step10_advanced_p1(tr: TestResult):
     tr.step("油墨清单", result)
 
     # 测试 PowerClip（用两个矩形）
-    clip_container = create_rectangle(DOC.path, 60, 80, 30, 15, 5)
-    clip_content = create_rectangle(DOC.path, 62, 82, 10, 6, 0)
+    clip_container = create_shape(DOC.path, 1, "rectangle", 60, 80, "mm", width=30, height=15, corner_radius=5)
+    clip_content = create_shape(DOC.path, 1, "rectangle", 62, 82, "mm", width=10, height=6)
     if clip_container.success and clip_content.success:
         cont_id = clip_container.data.get("shape_id", "")
         cnt_id = clip_content.data.get("shape_id", "")
-        result = powerclip(DOC.path, cnt_id, cont_id)
+        result = powerclip(DOC.path, 1, cont_id, shape_ids=[cnt_id])
         tr.step(f"PowerClip: {cnt_id[:8]} → {cont_id[:8]}", result)
     else:
         tr.skip("PowerClip 测试", "无法创建测试形状")
