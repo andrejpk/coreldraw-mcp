@@ -153,8 +153,10 @@ def _fill_inks(fill, stops=None, pattern=None):
 class _Page:
     """Accumulates the inks of one page."""
 
-    def __init__(self, page, unit, max_ids):
+    def __init__(self, page, unit, max_ids, collect=False):
         self.max_ids = max_ids
+        # Per-object records for plate attribution (render_plates): only when asked for.
+        self.objects = [] if collect else None
         self.inks = {}
         self.layer_rows = []
         self.bitmaps = []
@@ -314,6 +316,13 @@ def _read_layer(conn, page_data, view, include_ids):
                 page_data.warn("bitmap_process", entry.shape_id)
         if state == "hidden_printable" and any(description["plates"] for _, _, description in uses):
             page_data.warn("hidden_printable_ink", entry.shape_id)
+        if page_data.objects is not None and uses:
+            outline = outlines.get(entry.shape_id) if entry.type == _TEXT else (paints.get(entry.shape_id) or (0, 0))[1]
+            page_data.objects.append({
+                "id": entry.shape_id, "layer": layer, "master": bool(view.master), "state": state, "bounds": bounds,
+                "outline_width": outline[1][0] if outline and outline[0] else 0.0,
+                "uses": [(part, description["ink"], description["kind"], tuple(description["plates"]))
+                         for part, _, description in uses]})
         for part, key, description in uses:
             page_data.add(key, description, part, state, shape)
             if state in _MARKING and part != "text_whitespace" and description["kind"] == "registration":
@@ -455,7 +464,7 @@ def _lab(hex_value):
 
 _WARNINGS = {
     "hidden_printable_ink": "Inks on hidden layers that are still printable: CorelDRAW prints them, but "
-                            "export_page_proof_pdf (Publish to PDF) omits them",
+                            "export_page_proof_pdf (Publish to PDF) omits them unless include_hidden_printable",
     "ink_only_off_page": "Inks used only by objects outside the page: their plates would be blank",
     "similar_spot_names": "Spot names that differ only in prefix, case or punctuation",
     "similar_spot_colors": f"Different spots that look alike (CIE76 delta E below {_SIMILAR_DELTA_E:g}, from "
@@ -649,9 +658,10 @@ def get_ink_inventory(
                          document_print_plates=plates, pages=results, next_pages=next_pages)
 
 
-def _page_inventory(conn, doc, page, page_index, unit, include_ids, max_ids, printable_only):
+def _page_inventory(conn, doc, page, page_index, unit, include_ids, max_ids, printable_only, collect=False):
+    """One page's inventory. collect=True adds "objects": every inked object with bounds, state and inks."""
     for fresh in (False, True):
-        page_data = _Page(page, unit, max_ids)
+        page_data = _Page(page, unit, max_ids, collect)
         try:
             for view in page_layers(doc, page, fresh=fresh):
                 _read_layer(conn, page_data, view, include_ids)
@@ -662,8 +672,11 @@ def _page_inventory(conn, doc, page, page_index, unit, include_ids, max_ids, pri
         raise RuntimeError("The page changed while it was being read; retry when it is not being edited")
     inks, plates, warnings = _finish(page_data, include_ids, printable_only)
     left, bottom, right, top = page_data.bounds
-    return {"page_index": page_index, "page_name": page.Name,
-            "page_bounds": {"left": left, "bottom": bottom, "right": right, "top": top},
-            "plates": plates, "inks": inks, "layers": page_data.layer_rows, "bitmaps": page_data.bitmaps,
-            "warnings": warnings}
+    result = {"page_index": page_index, "page_name": page.Name,
+              "page_bounds": {"left": left, "bottom": bottom, "right": right, "top": top},
+              "plates": plates, "inks": inks, "layers": page_data.layer_rows, "bitmaps": page_data.bitmaps,
+              "warnings": warnings}
+    if collect:
+        result["objects"] = page_data.objects
+    return result
 

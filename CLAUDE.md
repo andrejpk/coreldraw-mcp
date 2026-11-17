@@ -40,6 +40,7 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
 
 - `_find_shape()` 在 `shapes.py`、`layers.py` 两处重复（各有细微差异，尚未统一）。颜色工具（`colors.py`、`recolor.py`）按 StaticID 经 `core/structure.py` 定位，颜色规格统一由 `core/colorspec.py` 解析
 - 颜色、油墨与印版检查统一用 `get_ink_inventory`（`tools/inks.py`）。旧的 `get_color_report` 和两份 `check_rgb_colors` 已在 E03 删除，Agent runner 的工具去重也随之移除。
+- 印版（胶片）视觉与数值反馈用 `render_plates`（`tools/plates.py`，Ghostscript 在 COM 桥之外运行，`core/separations.py` 不含 COM）。`export_layer_proof_pdf` 已并入 `export_page_proof_pdf(layer_name=…)`，`get/set_simulate_overprints` 合并为 `simulate_overprints`（E10）。
 - PNG 导出有两套 API：`ExportBitmap`（主方案）和 `Export`（fallback），因不同 CorelDRAW 版本行为不一
 - 专色按名称查找：先查文档调色板，再查已安装专色调色板（读取 `Color\Palettes\Spot` 的 XML），用 `app.CreateSpotColorByName(guid, name, tint)` 创建（旧的 `FindPantone` 方案从未生效，E02 已删除）。`ShapeRange.SetOutlineProperties` 经 pywin32 需用 `InvokeTypes` 传全部 14 个类型化参数（见 `tools/colors.py`）
 

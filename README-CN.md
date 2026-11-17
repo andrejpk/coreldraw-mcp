@@ -55,6 +55,7 @@
 | `shapes` | 11 个 | 矩形/椭圆/线段绘制、SVG/图片导入、布尔运算 |
 | `text` | 5 个 | 文字内容替换、样式设置、溢出检测、转曲 |
 | `colors` + `recolor` | 6 个 | `set_fill`（专色名+色调、CMYK、RGB、套准色、无、渐变、取色、文字区间）、`set_outline`（专色描边、显式宽度单位）、`set_overprint`、`set_transparency`、`replace_color`（范围替换、预演、单步撤销、回读校验）、`undo` |
+| `proof` + `plates` | 4 个 | `export_page_proof_pdf`（整页或单图层、可含隐藏但可打印图层、状态恢复）、`render_plates`（Ghostscript 分色胶片：覆盖率、边界框、仅套准、对象归属、预测与渲染对比、包含/收缩检查）、`simulate_overprints`、`get_print_separation_settings` |
 | `layers` | 5 个 | 图层创建、查询、分配、显隐、锁定 |
 | `export` | 7 个 | PDF/DXF/AI/SVG/PNG 导出、视觉预览、批量导出 |
 | `preflight` | 4 个 | 尺寸检查、文字溢出、缺字体、颜色报告 |

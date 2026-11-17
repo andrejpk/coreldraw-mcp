@@ -64,6 +64,7 @@ def register_tools():
         inks,
         inspection,
         layers,
+        plates,
         preflight,
         proof,
         recolor,
@@ -115,11 +116,10 @@ def register_tools():
     mcp.add_tool(geometry.weld_copies_by_id)
     mcp.add_tool(geometry.weld_consecutive_shapes)
     mcp.add_tool(geometry.delete_shape_by_id)
-    mcp.add_tool(proof.get_simulate_overprints)
-    mcp.add_tool(proof.set_simulate_overprints)
+    mcp.add_tool(proof.simulate_overprints)
     mcp.add_tool(proof.get_print_separation_settings)
     mcp.add_tool(proof.export_page_proof_pdf)
-    mcp.add_tool(proof.export_layer_proof_pdf)
+    mcp.add_tool(plates.render_plates)
 
     mcp.add_tool(text.set_text_content)
     mcp.add_tool(text.set_text_content_by_id)

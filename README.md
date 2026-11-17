@@ -57,6 +57,7 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 | `shapes` | 11 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops |
 | `text` | 5 | Text replacement, style, overflow detection, convert to curves |
 | `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
+| `proof` + `plates` | 4 | `export_page_proof_pdf` (page or one layer, optional hidden-but-printable layers, state restored), `render_plates` (Ghostscript films per plate: coverage, bboxes, registration-only, object attribution, predicted vs rendered, containment/choke check), `simulate_overprints`, `get_print_separation_settings` |
 | `layers` | 5 | Create, query, assign, show/hide, lock layers |
 | `export` | 7 | PDF / DXF / AI / SVG / PNG export, visual preview, batch export |
 | `preflight` | 4 | Size check, text overflow, missing fonts, color report |

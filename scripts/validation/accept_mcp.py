@@ -1,5 +1,6 @@
 r"""Acceptance tests through the running MCP server: E08 document management, the 2026-11-17 production
-follow-up, the E17a structure cache, the E03 ink inventory and the E02+E05 color editing tools.
+follow-up, the E17a structure cache, the E03 ink inventory, the E02+E05 color editing tools and E10 plate
+feedback (render_plates, merged export_page_proof_pdf, simulate_overprints).
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -326,7 +327,7 @@ for name, spots, overprint in (("Ink B", ["PANTONE 300 C"], True), ("Hidden C", 
                                ("Weld", ["PANTONE 186 C", "PANTONE 300 C"], False)):
     out = FX + f"\\proof-{name.replace(' ', '_')}.pdf"
     Path(out).unlink(missing_ok=True)
-    r = call("export_layer_proof_pdf", document_path=DOC, page_index=1, layer_name=name, output_path=out)
+    r = call("export_page_proof_pdf", document_path=DOC, page_index=1, layer_name=name, output_path=out)
     found = scan(out) if r["success"] else {}
     check(f"layer proof {name!r}: only its inks", r["success"] and found["spots"] == spots,
           r.get("error") or (found, r["data"]["excluded_printable_layers"], f"{r['_seconds']}s"))
@@ -336,14 +337,14 @@ for name, spots, overprint in (("Ink B", ["PANTONE 300 C"], True), ("Hidden C", 
     check(f"layer proof {name!r}: fill overprint preserved={overprint}", r["success"] and (found["overprint_fill_true"] > 0) == overprint)
     check(f"layer proof {name!r}: document and PDF settings unchanged", direct(pdf_state) == state0)
 Path(FX + r"\proof-p2.pdf").unlink(missing_ok=True)  # a rerun in the same folder must not find an old proof
-r = call("export_layer_proof_pdf", document_path=DOC, page_index=2, layer_name="Ink B", output_path=FX + r"\proof-p2.pdf")
+r = call("export_page_proof_pdf", document_path=DOC, page_index=2, layer_name="Ink B", output_path=FX + r"\proof-p2.pdf")
 found = scan(FX + r"\proof-p2.pdf") if r["success"] else {}
 check("layer proof: same-named layer on page 2 publishes only page 2 ink", found.get("spots") == ["PANTONE 485 C"], found)
 if GS:
     check("layer proof: page 2 Ghostscript plates", inked_plates(FX + r"\proof-p2.pdf") == ["PANTONE 485 C"])
-r = call("export_layer_proof_pdf", document_path=DOC, page_index=1, layer_name="Guides", output_path=FX + r"\x.pdf")
+r = call("export_page_proof_pdf", document_path=DOC, page_index=1, layer_name="Guides", output_path=FX + r"\x.pdf")
 check("layer proof: master/special layer rejected", not r["success"], r.get("error"))
-r = call("export_layer_proof_pdf", document_path=DOC, page_index=1, layer_name="Ink B", output_path=FX + r"\proof-Ink_B.pdf")
+r = call("export_page_proof_pdf", document_path=DOC, page_index=1, layer_name="Ink B", output_path=FX + r"\proof-Ink_B.pdf")
 check("layer proof: existing output refused", not r["success"], r.get("error"))
 check("layer proof: state unchanged after refusals", direct(pdf_state) == state0)
 
@@ -862,6 +863,175 @@ check("catalog: color tools consolidated", {"set_fill", "set_outline", "set_over
                                             "replace_color", "undo"} <= names and not removed & names,
       sorted(removed & names))
 for target in (CL, CL2, KG, KN):
+    r = call("close_document", document_path=target, discard_changes=True)
+    check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
+
+# 7. Plate feedback: render_plates, merged proof export, simulate_overprints (E10) ----------------------------
+SJ, SEED, KN10 = FX + r"\e10_screen_job.cdr", FX + r"\e10_seeded.cdr", FX + r"\e10_knights.cdr"
+OUT10 = Path(FX) / "e10"
+shutil.rmtree(OUT10, ignore_errors=True)
+OUT10.mkdir()
+shutil.copyfile(TEMPLATES / "screen_job.cdr", SJ)
+shutil.copyfile(TEMPLATES / "screen_job.cdr", SEED)
+shutil.copyfile(SAMPLES / "Knights Striped HEad.cdr", KN10)
+for target in (SJ, KN10, INKS):
+    r = call("open_document", path=target, activate=False)
+    check(f"e10 setup: open {Path(target).name}", r["success"], r.get("error"))
+UB = ["PANTONE 186 C", "PANTONE 300 C", "PANTONE 116 C"]
+ART = [0, 1.5, 13, 18]  # screen_job above the film titles, in inches
+
+
+def bounds_of(path, page=1):
+    r = call("inspect_shapes", document_path=path, page_index=page, fields=["name", "bounds"])
+    return {s["name"]: s["bounds"] for s in r["data"]["shapes"] if s.get("name")}
+
+
+def plate(data, name):
+    return next((p for p in data["plates"] if p["plate"] == name), None)
+
+
+def contains(box, b, tol):
+    return (box["left"] <= b["left"] + tol and box["bottom"] <= b["bottom"] + tol
+            and box["right"] >= b["left"] + b["width"] - tol and box["top"] >= b["bottom"] + b["height"] - tol)
+
+
+def sj_state():
+    doc = doc_of(SJ)
+    return doc.Dirty, doc.ActivePage.Index, doc.Unit, [(l.Name, bool(l.Visible), bool(l.Printable))
+                                                       for l in doc.Pages(1).AllLayers]
+
+
+state_before = direct(sj_state)
+inventory = call("get_ink_inventory", document_path=SJ, max_ids_per_ink=0)["data"]["pages"][0]
+r = call("render_plates", document_path=SJ, page_index=1, output_dir=str(OUT10 / "sj"),
+         contain=[{"plate": "PANTONE Trans. White", "within": UB, "region": ART},
+                  {"plate": "PANTONE Trans. White", "within": UB, "region": ART, "inset": 2, "unit": "pt"},
+                  {"plate": "PANTONE Trans. White", "within": UB, "region": ART, "inset": 2.5, "unit": "pt"},
+                  {"plate": "PANTONE Trans. White", "within": UB},
+                  {"plate": "PANTONE 999 C", "within": UB}])
+d = r.get("data") or {}
+check("render_plates screen_job: one call, under 10 s, small response without image bytes", r["success"]
+      and r["_seconds"] < 10 and len(json.dumps(r)) < 20000 and "base64" not in json.dumps(r),
+      (r.get("error"), r.get("_seconds"), len(json.dumps(r))))
+check("render_plates screen_job: predicted = rendered = inventory pdf_proof", r["success"]
+      and sorted(d["predicted_plates"]) == sorted(d["rendered_plates"]) == sorted(inventory["plates"]["pdf_proof"])
+      and d["differences"] == [], d.get("differences"))
+check("render_plates screen_job: CMYK films are registration-only, spot films carry art",
+      r["success"] and all(plate(d, n)["registration_only"] for n in ("Cyan", "Magenta", "Yellow", "Black"))
+      and not any(plate(d, n)["registration_only"] for n in UB + ["PANTONE Trans. White"])
+      and d["registration_detected"])
+named = bounds_of(SJ)
+ids = {p["plate"]: sorted(x["id"] for x in p.get("attributed_ids", [])) for p in d.get("plates", [])}
+check("render_plates screen_job: attribution names the art and underbase objects (approximate, by bbox)",
+      r["success"] and "4" in ids["PANTONE 186 C"] and "6" in ids["PANTONE 300 C"] and "8" in ids["PANTONE 116 C"]
+      and {"5", "7", "9"} <= set(ids["PANTONE Trans. White"])
+      and not any(p.get("unattributed_art") for p in d["plates"]), ids)
+art300 = plate(d, "PANTONE 300 C")["art_bbox"] if r["success"] else None
+check("render_plates screen_job: plate bbox in document units, comparable with inspect_shapes bounds",
+      r["success"] and contains(art300, named["art_band"], 0.01) and d["document_unit"] == "in"
+      and abs(art300["left"] - named["art_band"]["left"]) < 0.02, (art300, named.get("art_band")))
+check("render_plates screen_job: hidden-but-printable Halftone Scale is warned about", r["success"] and any(
+      w["code"] == "hidden_printable_layers_omitted" and w["layers"] == ["Halftone Scale"] for w in d["warnings"]))
+files = sorted(f.name for f in (OUT10 / "sj").iterdir())
+check("render_plates screen_job: proof.pdf, composite, one PNG per plate and plates.json written",
+      r["success"] and {"proof.pdf", "composite.png", "plates.json"} <= set(files)
+      and all(Path(p["png"]).is_file() for p in d["plates"]) and len(d["plates"]) == 8, files)
+if GS:
+    independent = render(OUT10 / "sj" / "proof.pdf", OUT10 / "sj.independent", GS, 150, 1)
+    check("render_plates screen_job: independent render_separation_proof agrees on non-blank plates",
+          sorted(p["name"] for p in independent["plates"] if not p["blank"]) == sorted(d["rendered_plates"]))
+c = d.get("containment", [{}] * 5)
+check("containment: underbase within the inks, region above the titles, inset 0 -> 0 protrusion",
+      c[0].get("protrusion_px") == 0 and c[0].get("plate_art_px", 0) > 100000, c[0])
+check("containment: inset 2 pt still 0 (choke 0.03 in = 2.16 pt)", c[1].get("protrusion_px") == 0, c[1])
+check("containment: inset 2.5 pt protrudes (choke measured between 2 and 2.5 pt)",
+      c[2].get("protrusion_px", 0) > 1000 and c[2]["inset_px"] > 5, c[2])
+check("containment: without a region the white film title is the protrusion",
+      c[3].get("protrusion_px", 0) > 0 and c[3]["protrusion_bbox"]["top"] < 1.5, c[3].get("protrusion_bbox"))
+check("containment: unknown plate reported per check", "error" in c[4] and "PANTONE 999 C" in c[4]["error"], c[4])
+check("render_plates: document state unchanged (dirty, page, unit, layer visibility and printability)",
+      direct(sj_state) == state_before)
+
+r2 = call("render_plates", document_path=SJ, page_index=1, output_dir=str(OUT10 / "sj_hidden"),
+          include_hidden_printable=True)
+d2 = r2.get("data") or {}
+check("render_plates include_hidden_printable: Halftone Scale tints rendered, layer restored, no warning",
+      r2["success"] and d2["proof"]["hidden_printable_layers_included"] == ["Halftone Scale (page)"]
+      and plate(d2, "PANTONE 116 C")["inked_area"] > plate(d, "PANTONE 116 C")["inked_area"] * 1.2
+      and not d2["warnings"] and d2["differences"] == [] and direct(sj_state) == state_before,
+      r2.get("error") or d2.get("proof"))
+r3 = call("render_plates", document_path=SJ, page_index=1, output_dir=str(OUT10 / "sj_layer"), layer_name="Halftone Scale")
+check("render_plates layer_name: only that layer's three inks, predicted = rendered",
+      r3["success"] and sorted(r3["data"]["rendered_plates"]) == sorted(UB) == sorted(r3["data"]["predicted_plates"]),
+      r3.get("error") or r3["data"]["rendered_plates"])
+pdf = FX + r"\e10_hidden.pdf"
+Path(pdf).unlink(missing_ok=True)
+r4 = call("export_page_proof_pdf", document_path=SJ, page_index=1, output_path=pdf, include_hidden_printable=True)
+check("export_page_proof_pdf include_hidden_printable: hidden layer published, state restored", r4["success"]
+      and r4["data"]["hidden_printable_layers_included"] == ["Halftone Scale (page)"]
+      and direct(sj_state) == state_before, r4.get("error"))
+if GS and r4["success"]:
+    check("export_page_proof_pdf include_hidden_printable: Ghostscript sees the halftone scale inks",
+          inked_plates(pdf) == sorted(inventory["plates"]["pdf_proof"]))
+r5 = call("export_page_proof_pdf", document_path=SJ, page_index=1, output_path=FX + r"\e10_x.pdf",
+          layer_name="Halftone Scale", include_hidden_printable=True)
+check("export_page_proof_pdf: layer_name with include_hidden_printable refused", not r5["success"], r5.get("error"))
+pdf = FX + r"\e10_plain.pdf"
+Path(pdf).unlink(missing_ok=True)
+r6 = call("export_page_proof_pdf", document_path=SJ, page_index=1, output_path=pdf)
+check("export_page_proof_pdf: whole page names the omitted hidden-but-printable layer", r6["success"]
+      and r6["data"]["hidden_printable_layers_omitted"] == ["Halftone Scale (page)"], r6.get("error") or r6.get("data"))
+
+# Seeded fault: a white object sticking out of the 186 C circle (x 3.5-9.5 in).
+r = call("open_document", path=SEED, activate=True)
+created = call("create_rectangle", document_path=SEED, x=9.3, y=12.0, width=0.5, height=0.5)
+seed_id = created["data"]["shape_id"] if created["success"] else None
+filled = call("set_fill", document_path=SEED, page_index=1, shape_ids=[seed_id], color="PANTONE Trans. White") \
+    if seed_id else {"success": False}
+check("seeded: white rectangle added on a copy", created["success"] and filled["success"], created.get("error"))
+r = call("render_plates", document_path=SEED, page_index=1, output_dir=str(OUT10 / "seeded"),
+         contain=[{"plate": "PANTONE Trans. White", "within": UB, "region": ART}])
+cs = (r.get("data") or {}).get("containment", [{}])[0]
+box = cs.get("protrusion_bbox") or {}
+check("seeded: containment catches the protruding white (area and bbox outside the circle)",
+      cs.get("protrusion_px", 0) > 500 and box.get("right", 0) > 9.5 and box.get("left", 99) >= 9.25,
+      (cs.get("protrusion_px"), box))
+check("seeded: the new object is attributed to the white film",
+      r["success"] and seed_id in [x["id"] for x in plate(r["data"], "PANTONE Trans. White")["attributed_ids"]])
+call("close_document", document_path=SEED, discard_changes=True)
+
+r = call("render_plates", document_path=KN10, page_index=2, output_dir=str(OUT10 / "knights_p2"))
+types = {(x["type"], x["plate"]) for x in r["data"]["differences"]} if r["success"] else set()
+check("render_plates Knights p2: CMY films reported as coming only from bitmaps",
+      {("process_plate_from_bitmaps_only", n) for n in ("Cyan", "Magenta", "Yellow")} <= types, types)
+inks_inventory = call("get_ink_inventory", document_path=INKS, max_ids_per_ink=0)["data"]["pages"]
+for page in (1, 2, 3):
+    r = call("render_plates", document_path=INKS, page_index=page, output_dir=str(OUT10 / f"inks_p{page}"))
+    check(f"render_plates inks.cdr p{page}: rendered = predicted = inventory pdf_proof", r["success"]
+          and sorted(r["data"]["rendered_plates"]) == sorted(r["data"]["predicted_plates"])
+          == sorted(inks_inventory[page - 1]["plates"]["pdf_proof"]),
+          r.get("error") or (r["data"]["rendered_plates"], r["data"]["differences"]))
+
+for args, label in (({"output_dir": str(OUT10 / "sj")}, "non-empty output folder"),
+                    ({"output_dir": "relative\\dir"}, "relative output folder"),
+                    ({"output_dir": str(OUT10 / "bad"), "dpi": 1200}, "dpi out of range"),
+                    ({"output_dir": str(OUT10 / "bad"), "contain": [{"plate": "A"}]}, "contain without within"),
+                    ({"output_dir": str(OUT10 / "bad"), "page_index": 9}, "page out of range")):
+    r = call("render_plates", **{"document_path": SJ, "page_index": 1, **args})
+    check(f"render_plates: {label} refused", not r["success"], r.get("error"))
+
+before = call("simulate_overprints", document_path=SJ)
+on = call("simulate_overprints", document_path=SJ, enabled=not before["data"]["simulate_overprints"])
+back = call("simulate_overprints", document_path=SJ, enabled=before["data"]["simulate_overprints"])
+check("simulate_overprints: read, set and set back with read-back", before["success"] and on["success"]
+      and on["data"]["simulate_overprints"] != before["data"]["simulate_overprints"]
+      and back["data"]["simulate_overprints"] == before["data"]["simulate_overprints"], (before, on, back))
+listed10 = {tool.name for tool in asyncio.run(_catalog())}
+check("catalog: render_plates and simulate_overprints added; layer proof and overprint get/set merged",
+      {"render_plates", "simulate_overprints", "export_page_proof_pdf"} <= listed10
+      and not {"export_layer_proof_pdf", "get_simulate_overprints", "set_simulate_overprints"} & listed10)
+for target in (SJ, KN10, INKS):
     r = call("close_document", document_path=target, discard_changes=True)
     check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
 

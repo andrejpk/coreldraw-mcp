@@ -12,10 +12,16 @@ _PDF_NATIVE_COLOR = 3
 _PDF_SPOT_AS_SPOT = 0
 
 
-def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResult:
+def simulate_overprints(document_path: str, enabled: bool | None = None) -> ToolResult:
+    """Read or set Simulate Overprints in the window of an exact open document.
+
+    enabled omitted: read only (the document stays as it is). enabled true/false: activates the
+    document, sets the view option, and reads it back. A view setting only: it changes no artwork and
+    no output; render_plates shows what overprints do to each film.
+    """
     conn = get_connection()
 
-    def read_view():
+    def view_state():
         # Only the active document has an ActiveWindow; reading uses its first window instead.
         doc, actual_path = resolve_document(conn.app, document_path, activate=enabled is not None)
         window = doc.ActiveWindow or doc.Windows.Item(1)
@@ -24,23 +30,13 @@ def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResu
             view.SimulateOverprints = enabled
         return {"document_path": actual_path, "simulate_overprints": bool(view.SimulateOverprints)}
 
-    result = conn.safe_call(read_view) if enabled is not None else conn.read_call(read_view)
+    result = conn.safe_call(view_state) if enabled is not None else conn.read_call(view_state)
     if not result["success"]:
         return ToolResult.fail(result["error"])
     data = result["result"]
     if enabled is not None and data["simulate_overprints"] != enabled:
         return ToolResult(success=False, error="CorelDRAW did not apply the requested view setting", data=data)
     return ToolResult.ok(**data)
-
-
-def get_simulate_overprints(document_path: str) -> ToolResult:
-    """Read Simulate Overprints in the window of an exact open document."""
-    return _overprint_view(document_path)
-
-
-def set_simulate_overprints(document_path: str, enabled: bool) -> ToolResult:
-    """Set Simulate Overprints in an exact open document's window (activates it) and read the state back."""
-    return _overprint_view(document_path, enabled)
 
 
 def get_print_separation_settings(document_path: str) -> ToolResult:
@@ -142,103 +138,100 @@ def _publish_page(doc, page_index, destination):
     return size
 
 
-def export_page_proof_pdf(document_path: str, page_index: int, output_path: str) -> ToolResult:
-    """Publish one page as a composite proof PDF with native colors, spots, and overprint instructions.
-
-    Use a new absolute PDF path in an existing directory. CorelDRAW's Publish to PDF
-    engine supplies the artwork. This PDF can be rendered by a separations-capable
-    renderer. It does not reproduce the print dialog, active printer layout, or RIP.
-    The active view and original PDF options are preserved. No print job is sent.
-    """
-    conn = get_connection()
-    try:
-        destination = _proof_destination(output_path)
-    except ValueError as exc:
-        return ToolResult.fail(str(exc))
-
-    def publish():
-        doc, actual_path = resolve_document(conn.app, document_path)
-        resolve_page(doc, page_index)
-        size = _publish_page(doc, page_index, destination)
-        return {
-            "document_path": actual_path, "page_index": page_index, "output_path": str(destination),
-            "bytes": size, "proof_source": "CorelDRAW Publish to PDF",
-        }
-
-    result = conn.safe_call(publish)
-    if result["success"]:
-        return ToolResult.ok(**result["result"])
-    return ToolResult.fail(result["error"])
-
-
 def _layer_label(layer):
     return f"{layer.Name} ({'shared' if layer.Master else 'page'})"
 
 
-def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str, output_path: str) -> ToolResult:
-    """Publish a proof PDF of one page containing only one named page layer, with native spots and overprints.
+def _hidden_printable(layer):
+    return bool(layer.Printable) and not bool(layer.Visible) and not layer.IsSpecialLayer and layer.Shapes.Count > 0
 
-    layer_name must match exactly one ordinary layer local to the page. Every other layer on the
-    page, including shared master layers, is made non-printing only while publishing. Printability
-    decides which layers are published. A hidden layer is published as a PDF layer that is off by
-    default, which renderers show as blank, so a hidden target is made visible while publishing.
-    Afterward the tool restores and verifies each layer's printability and visibility, the PDF
-    settings, the active page, the document unit, and the unsaved-changes flag, after success or
-    failure. Activates the document. No print job is sent.
+
+def publish_proof(app, document_path, page_index, destination, layer_name=None, include_hidden_printable=False):
+    """Publish one page (or one page layer) to ``destination`` on the COM worker; restore and verify all state.
+
+    Layer printability and visibility are changed only while publishing (layer proof, or hidden-but-printable
+    layers made visible). Afterwards every changed flag, the dirty flag, the active page and the unit are
+    verified; PDF settings are restored by _publish_page. Raises on any failure, after restoring.
     """
-    conn = get_connection()
-    try:
-        destination = _proof_destination(output_path)
-    except ValueError as exc:
-        return ToolResult.fail(str(exc))
-
-    def publish():
-        # Layer flags change while publishing, so the document is activated like any edit.
-        doc, actual_path = resolve_document(conn.app, document_path, activate=True)
-        page = resolve_page(doc, page_index)
-        layers = list(page.AllLayers)
+    changes_flags = layer_name is not None or include_hidden_printable
+    # Layer flags change while publishing, so the document is activated like any edit.
+    doc, actual_path = resolve_document(app, document_path, activate=changes_flags)
+    page = resolve_page(doc, page_index)
+    layers = list(page.AllLayers)
+    flags = []  # (layer, property, original value, value while publishing)
+    info = {}
+    if layer_name is not None:
         targets = [layer for layer in layers if layer.Name == layer_name and not layer.Master
                    and not layer.IsSpecialLayer]
         if len(targets) != 1:
             raise ValueError(f"Expected one page layer named {layer_name!r}; found {len(targets)}")
         target = targets[0]
-        # (layer, property, original value, value while publishing)
         flags = [(layer, "Printable", bool(layer.Printable), layer is target) for layer in layers]
-        target_visible = bool(target.Visible)
-        flags.append((target, "Visible", target_visible, True))
-        state = (doc.Dirty, doc.ActivePage.Index, doc.Unit)
-        excluded = [_layer_label(layer) for layer, name, value, _ in flags
-                    if name == "Printable" and value and layer is not target and layer.Shapes.Count]
-        try:
-            for layer, name, value, wanted in flags:
-                if value != wanted:
-                    setattr(layer, name, wanted)
-                if bool(getattr(layer, name)) != wanted:
-                    raise RuntimeError(f"CorelDRAW did not change {name} of layer {_layer_label(layer)}")
-            size = _publish_page(doc, page_index, destination)
-        finally:
-            failed = []
-            for layer, name, value, _ in flags:
-                try:
-                    if bool(getattr(layer, name)) != value:
-                        setattr(layer, name, value)
-                    if bool(getattr(layer, name)) != value:
-                        failed.append(f"{_layer_label(layer)} {name}")
-                except Exception:
+        info["layer_visible"] = bool(target.Visible)
+        flags.append((target, "Visible", info["layer_visible"], True))
+        info["layer_shape_count"] = target.Shapes.Count
+        info["excluded_printable_layers"] = [_layer_label(layer) for layer, name, value, _ in flags
+                                             if name == "Printable" and value and layer is not target
+                                             and layer.Shapes.Count]
+    else:
+        hidden = [layer for layer in layers if _hidden_printable(layer)]
+        labels = [_layer_label(layer) for layer in hidden]
+        if include_hidden_printable:
+            flags = [(layer, "Visible", False, True) for layer in hidden]
+            info["hidden_printable_layers_included"] = labels
+        else:
+            info["hidden_printable_layers_omitted"] = labels
+    state = (doc.Dirty, doc.ActivePage.Index, doc.Unit)
+    try:
+        for layer, name, value, wanted in flags:
+            if value != wanted:
+                setattr(layer, name, wanted)
+            if bool(getattr(layer, name)) != wanted:
+                raise RuntimeError(f"CorelDRAW did not change {name} of layer {_layer_label(layer)}")
+        size = _publish_page(doc, page_index, destination)
+    finally:
+        failed = []
+        for layer, name, value, _ in flags:
+            try:
+                if bool(getattr(layer, name)) != value:
+                    setattr(layer, name, value)
+                if bool(getattr(layer, name)) != value:
                     failed.append(f"{_layer_label(layer)} {name}")
+            except Exception:
+                failed.append(f"{_layer_label(layer)} {name}")
+        if doc.Dirty != state[0]:
             doc.Dirty = state[0]
-            if failed:
-                raise RuntimeError(f"Failed to restore layer flags: {', '.join(failed)}")
-            if (doc.Dirty, doc.ActivePage.Index, doc.Unit) != state:
-                raise RuntimeError("The unsaved-changes flag, active page, or document unit changed")
-        return {
-            "document_path": actual_path, "page_index": page_index, "layer_name": layer_name,
-            "layer_visible": target_visible, "layer_shape_count": target.Shapes.Count,
-            "excluded_printable_layers": excluded, "output_path": str(destination), "bytes": size,
-            "proof_source": "CorelDRAW Publish to PDF",
-        }
+        if failed:
+            raise RuntimeError(f"Failed to restore layer flags: {', '.join(failed)}")
+        if (doc.Dirty, doc.ActivePage.Index, doc.Unit) != state:
+            raise RuntimeError("The unsaved-changes flag, active page, or document unit changed")
+    return {"document_path": actual_path, "page_index": page_index, "layer_name": layer_name, **info,
+            "output_path": str(destination), "bytes": size, "proof_source": "CorelDRAW Publish to PDF"}
 
-    result = conn.safe_call(publish)
+
+def export_page_proof_pdf(document_path: str, page_index: int, output_path: str, layer_name: str | None = None,
+                          include_hidden_printable: bool = False) -> ToolResult:
+    """Publish one page, or one page layer, as a composite proof PDF with native spots and overprints.
+
+    output_path: a new absolute .pdf path in an existing directory. CorelDRAW's Publish to PDF supplies
+    the artwork; it is not the print dialog, printer layout or RIP. No print job is sent.
+    Publish to PDF omits hidden layers even when they are printable (CorelDRAW print may include them):
+    their names are returned in hidden_printable_layers_omitted; include_hidden_printable=true makes
+    them visible while publishing. layer_name: proof of exactly one page-local layer (not master or
+    special); every other layer, including shared master layers, is non-printing while publishing, and
+    a hidden target is made visible. When layer flags change the document is activated. Afterwards the
+    tool restores and verifies layer printability and visibility, the PDF settings, the active page, the
+    document unit and the unsaved-changes flag, after success or failure. render_plates renders the films.
+    """
+    conn = get_connection()
+    try:
+        destination = _proof_destination(output_path)
+    except ValueError as exc:
+        return ToolResult.fail(str(exc))
+    if layer_name is not None and include_hidden_printable:
+        return ToolResult.fail("include_hidden_printable applies to whole-page proofs, not layer_name proofs")
+    result = conn.safe_call(lambda: publish_proof(conn.app, document_path, page_index, destination, layer_name,
+                                                  include_hidden_printable))
     if result["success"]:
         return ToolResult.ok(**result["result"])
     return ToolResult.fail(result["error"])

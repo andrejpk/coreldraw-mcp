@@ -1,4 +1,4 @@
-"""In-process failure-path checks: layer proof restore, partial-weld rollback, and why edits activate their document (Undo)."""
+"""In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, partial-weld rollback, and why edits activate their document (Undo)."""
 import json, sys
 sys.path.insert(0, ".")
 from core.connection import get_connection
@@ -23,7 +23,7 @@ def state():
         s = doc.PDFSettings
         return {"pdf": {n: getattr(s, n) for n in ("PublishRange", "PageRange", "ColorMode", "Overprints")},
                 "dirty": doc.Dirty, "page": doc.ActivePage.Index, "unit": doc.Unit,
-                "layers": [(l.Name, bool(l.Printable)) for p in (1, 2) for l in doc.Pages(p).AllLayers]}
+                "layers": [(l.Name, bool(l.Printable), bool(l.Visible)) for p in (1, 2) for l in doc.Pages(p).AllLayers]}
     return conn.safe_call(run)["result"]
 
 
@@ -39,11 +39,32 @@ def failing_publish(doc, page_index, destination):
 original = proof._publish_page
 proof._publish_page = failing_publish
 try:
-    r = proof.export_layer_proof_pdf(DOC, 1, "Ink B", FX + r"\never.pdf")
+    r = proof.export_page_proof_pdf(DOC, 1, FX + r"\never.pdf", layer_name="Ink B")
 finally:
     proof._publish_page = original
 print("PASS" if not r.success and "simulated" in r.error else "FAIL", "layer proof reports the failure:", r.error)
 print("PASS" if state() == s0 else "FAIL", "layer flags, dirty flag, PDF settings restored after failure")
+
+# Same for a whole-page proof that makes hidden-but-printable layers visible ("Hidden C" on page 1).
+proof._publish_page = failing_publish
+try:
+    r = proof.export_page_proof_pdf(DOC, 1, FX + r"\never2.pdf", include_hidden_printable=True)
+finally:
+    proof._publish_page = original
+print("PASS" if not r.success and "simulated" in r.error and state() == s0 else "FAIL",
+      "hidden-printable proof: failure reported and layer visibility restored:", r.error)
+
+
+# render_plates fails clearly without Ghostscript, before touching CorelDRAW.
+import os  # noqa: E402
+from tools import plates  # noqa: E402
+os.environ["GHOSTSCRIPT_EXE"] = FX + r"\no-such-gswin64c.exe"
+try:
+    r = plates.render_plates(DOC, 1, FX + r"\never-render")
+finally:
+    del os.environ["GHOSTSCRIPT_EXE"]
+print("PASS" if not r.success and "GHOSTSCRIPT_EXE" in r.error and not os.path.exists(FX + r"\never-render") else "FAIL",
+      "render_plates without Ghostscript fails clearly and writes nothing:", r.error)
 
 
 # The weld rollback depends on detecting a partial weld and on Undo(1) restoring the sources.
