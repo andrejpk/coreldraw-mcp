@@ -1,7 +1,9 @@
 r"""Acceptance tests through the running MCP server: E08 document management, the 2026-11-17 production
 follow-up, the E17a structure cache, the E03 ink inventory, the E02+E05 color editing tools, E10 plate
 feedback (render_plates, merged export_page_proof_pdf, simulate_overprints) and E04+E11 find_shapes (filters,
-artifact presets, paging, selection, the named-shape cache fingerprint).
+artifact presets, paging, selection, the named-shape cache fingerprint) and E13/E13b geometry and effect tools
+(offset_silhouette, combine_shapes, duplicate_shapes, separate_effect, convert_to_curves, apply_contour,
+inspect_shapes effect_details) on fresh template copies in <dir>\fx\e13b.
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -249,21 +251,23 @@ undo(DOC)
 undone = call("inspect_text_fill_runs", document_path=DOC, page_index=1, shape_id=IDS["text"])
 check("text copy: one undo restores the original runs", fmt(undone["data"]["runs"]) == fmt(runs), fmt(undone["data"]["runs"]))
 
-# 2. Weld consecutive shapes ----------------------------------------------------------------------
+# 2. Weld consecutive shapes (E13: combine_shapes weld with preserve_order) ----------------------------
 W = lambda *names: [IDS[n] for n in names]  # noqa: E731
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c1", "c3"))
+WELD = dict(document_path=DOC, page_index=1, operation="weld")
+r = call("combine_shapes", **WELD, shape_ids=W("c1", "c3"))
 check("weld: non-consecutive shapes rejected", not r["success"] and "consecutive" in r["error"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c3", "tint60"))
+r = call("combine_shapes", **WELD, shape_ids=W("c3", "tint60"))
 check("weld: different tint rejected", not r["success"] and "tint" in r["error"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("top", "c1"))
+r = call("combine_shapes", **WELD, shape_ids=W("top", "c1"))
 check("weld: different spot rejected", not r["success"], r.get("error"))
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c1", "b"))
+r = call("combine_shapes", **WELD, shape_ids=W("c1", "b"))
 check("weld: shapes on different layers rejected", not r["success"], r.get("error"))
 before = call("inspect_shapes", document_path=DOC, page_index=1, layer_name="Weld", fields=["z_order", "fill"])
 order_before = [s["shape_id"] for s in before["data"]["shapes"]]
-r = call("weld_consecutive_shapes", document_path=DOC, page_index=1, shape_ids=W("c2", "c3", "c1"))
-check("weld: consecutive run welds", r["success"], r.get("error") or {k: r["data"][k] for k in ("result_shape_id", "stack_index", "area")})
-data = r["data"]
+r = call("combine_shapes", **WELD, shape_ids=W("c2", "c3", "c1"))
+check("weld: consecutive run welds", r["success"], r.get("error") or {k: r["data"][k] for k in ("result_ids", "stack_index")})
+data = dict(r["data"], result_shape_id=r["data"]["result_ids"][0], area=r["data"]["results"][0]["area"],
+            source_area_sum=sum(x["area"] for x in r["data"]["sources"]))
 check("weld: neighbors unchanged", data["above_shape_id"] == IDS["top"] and data["below_shape_id"] == IDS["tint60"],
       (data["above_shape_id"], data["below_shape_id"]))
 after = call("inspect_shapes", document_path=DOC, page_index=1, layer_name="Weld", fields=["z_order", "fill"])
@@ -409,9 +413,9 @@ check("cache, out-of-band: new top-level shapes appear", r1 in ids(inv) and r2 i
 gone = edit(lambda doc, layers, named: (str(named["deep_leaf2"].StaticID), named["deep_leaf2"].Delete())[0])
 inv = mcp_inventory(ST)
 check("cache, out-of-band: a deleted nested shape disappears", gone not in ids(inv) and inv == truth(ST))
-r = call("inspect_contours", document_path=ST, page_index=1, shape_id=gone)
-check("cache, out-of-band: exact-ID read of the deleted shape fails as not found",
-      not r["success"] and "not found" in r["error"], r.get("error"))
+r = call("find_shapes", document_path=ST, pages=[1], filters={"ids": [gone]})
+check("cache, out-of-band: exact-ID lookup of the deleted shape reports it missing",
+      r["success"] and r["data"]["count"] == 0 and r["data"].get("missing_ids") == [gone], r.get("error") or r["data"])
 before = ids(mcp_inventory(ST))
 edit(lambda doc, layers, named: named["nest_l1"].OrderToBack())
 inv = mcp_inventory(ST)
@@ -439,9 +443,10 @@ inv = mcp_inventory(ST)
 moved = {s["shape_id"]: s["layer"]["name"] for s in inv}
 check("cache, out-of-band: shapes swapped between layers (counts unchanged) are reported on their new layers",
       moved.get(r1) == "PowerClip" and moved.get(r2) == "Groups" and inv == truth(ST), (moved.get(r1), moved.get(r2)))
-r = call("inspect_contours", document_path=ST, page_index=1, shape_id=r1)
-check("cache, out-of-band: exact-ID read finds a moved shape", r["success"], r.get("error"))
-r = call("duplicate_shape_by_id", document_path=ST, page_index=1, shape_id=r2, unit="in", dx=0.1)
+r = call("find_shapes", document_path=ST, pages=[1], filters={"ids": [r1]})
+check("cache, out-of-band: exact-ID lookup finds a moved shape on its new layer",
+      r["success"] and [x["layer"] for x in r["data"]["shapes"]] == ["PowerClip"], r.get("error") or r["data"])
+r = call("duplicate_shapes", document_path=ST, page_index=1, shape_ids=[r2], unit="in", dx=0.1)
 inv = mcp_inventory(ST)
 new_ids = set(ids(inv)) - set(ids(base)) - {r1, r2}
 check("cache, MCP edit: a duplicate made through the server appears", r["success"] and len(new_ids) == 1
@@ -1272,5 +1277,326 @@ check("catalog: find_shapes added; find_shape_by_name, select_shapes, list_all_t
 for target in (FD, KN4, ART4):
     r = call("close_document", document_path=target, discard_changes=True)
     check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
+# E13/E13b: geometry and effect tools on fresh template copies, MCP only ---------------------------------------
+G = Path(FX) / "e13b"
+for leftover in call("list_documents")["data"]["documents"]:  # an earlier interrupted run's copies
+    if str(leftover.get("document_path") or "").lower().startswith(str(G).lower() + "\\"):
+        call("close_document", document_path=leftover["document_path"], discard_changes=True)
+shutil.rmtree(G, ignore_errors=True)
+G.mkdir(parents=True, exist_ok=True)
+GEO = {}
+for stem in ("screen_job", "colors", "text_runs", "structure", "effects", "layers", "artifacts"):
+    shutil.copyfile(TEMPLATES / f"{stem}.cdr", G / f"{stem}.cdr")
+    GEO[stem] = str(G / f"{stem}.cdr")
+    assert call("open_document", path=GEO[stem])["success"], stem
+
+
+def snapshot(path, page=1):
+    """Everything an undo must restore on a page: IDs, layers, names, types, paint, overprint, bounds."""
+    r = call("inspect_shapes", document_path=path, page_index=page,
+             fields=["name", "type", "fill", "outline", "bounds", "overprint_fill", "z_order"])
+    assert r["success"], r
+    return sorted((s["shape_id"], s["layer"]["name"], s.get("name"), s.get("type"), str(s.get("fill")),
+                   str(s.get("outline")), str(s.get("bounds")), str(s.get("overprint_fill")), s.get("z_order"))
+                  for s in r["data"]["shapes"])
+
+
+def page_ids(path, page=1):
+    return {row[0] for row in snapshot(path, page)}
+
+
+def refused_reasons(r):
+    return {x["id"]: x["reason"] for x in (r.get("data") or {}).get("refused", [])}
+
+
+SJ, CO, TR, SU, EF, LA, AR = (GEO[k] for k in ("screen_job", "colors", "text_runs", "structure", "effects", "layers",
+                                                 "artifacts"))
+BLACK = ["CMYK 0/0/0/100", "PANTONE Black C"]
+
+# offset_silhouette: E01 T6a (combined underbase) in one call on screen_job
+before = snapshot(SJ)
+r = call("offset_silhouette", document_path=SJ, page_index=1, shape_ids=["4", "6", "8", "10"], offset=0.75, unit="pt",
+         direction="inside", exclude_colors=BLACK, color="PANTONE Trans. White", target_layer="White Underbase",
+         overprint_fill=True, name="ub_combined")
+d = r.get("data") or {}
+off = d.get("offset", {})
+check("offset_silhouette: T6a underbase in one call (layer, white, overprint, name)", r["success"]
+      and d["layer"] == "White Underbase" and d["fill"].get("ink") == "PANTONE Trans. White"
+      and d["overprint"]["fill"] is True and d["name"] == "ub_combined" and d["participant_count"] == 4,
+      r.get("error") or {k: d.get(k) for k in ("layer", "fill", "overprint", "participant_count")})
+check("offset_silhouette: inset 0.75 pt achieved (every side, mean)", r["success"]
+      and off["achieved_min_side"] >= 0.74 and 0.7 <= off["achieved_mean"] <= 0.8
+      and off["direction_achieved"] == "inside" and d["area"] < d["silhouette"]["area"], off)
+after = page_ids(SJ)
+check("offset_silhouette: only the result is new, sources kept", r["success"]
+      and after == {row[0] for row in before} | {d["result_id"]}, sorted(after - {row[0] for row in before}))
+u = call("undo", document_path=SJ)
+check("offset_silhouette: one undo restores the page exactly", u["success"] and snapshot(SJ) == before)
+
+# black exclusion, outlines and fills (colors.cdr)
+r = call("offset_silhouette", document_path=CO, page_index=1, shape_ids=["19", "22", "14", "4"], offset=1, unit="pt",
+         direction="outside", exclude_colors=BLACK)
+d = r.get("data") or {}
+skipped = {x["id"]: (x["reason"], x["parts"]) for x in d.get("skipped", [])}
+parts = {x["id"]: x["parts"] for x in d.get("participants", [])}
+check("offset_silhouette: black fill and black outline objects excluded and listed", r["success"]
+      and skipped == {"14": ("excluded_color", ["fill"]), "19": ("excluded_color", ["outline"])}, skipped)
+check("offset_silhouette: an outline-only shape takes part as its stroke (the ring's hole stays open)", r["success"]
+      and parts == {"22": ["outline"], "4": ["fill"]} and d["holes"] >= 1, (parts, d.get("holes")))
+check("offset_silhouette: outside 1 pt achieved", r["success"] and d["offset"]["direction_achieved"] == "outside"
+      and d["offset"]["achieved_min_side"] >= 0.99, d.get("offset"))
+excluded_area = d.get("area", 0)
+call("undo", document_path=CO)
+r = call("offset_silhouette", document_path=CO, page_index=1, shape_ids=["19", "22", "14", "4"], offset=1, unit="pt",
+         direction="outside")
+d = r.get("data") or {}
+parts = {x["id"]: x["parts"] for x in d.get("participants", [])}
+check("offset_silhouette: without exclusion fill + outline both count", r["success"]
+      and parts.get("19") == ["fill", "outline"] and d["area"] > excluded_area, parts)
+call("undo", document_path=CO)
+r = call("offset_silhouette", document_path=CO, page_index=1, shape_ids=["14"], offset=1, exclude_colors=BLACK)
+check("offset_silhouette: everything excluded is refused, nothing changed", not r["success"]
+      and "nothing takes part" in refused_reasons(r).get("14", ""), r.get("error"))
+
+# target layer, overprint, consumed sources, undo
+before = snapshot(CO)
+r = call("offset_silhouette", document_path=CO, page_index=1, shape_ids=["4", "5"], offset=0, target_layer="Process",
+         overprint_fill=True, keep_sources=False, color="PANTONE Trans. White")
+d = r.get("data") or {}
+after = page_ids(CO)
+check("offset_silhouette: target_layer + overprint + keep_sources=false (sources removed)", r["success"]
+      and d["layer"] == "Process" and d["overprint"]["fill"] is True and not {"4", "5"} & after
+      and d["result_id"] in after and d["sources_kept"] is False, r.get("error") or d.get("layer"))
+check("offset_silhouette: offset 0 keeps the silhouette's area", r["success"] and abs(d["area"] - 2.0) < 1e-4,
+      d.get("area"))
+u = call("undo", document_path=CO)
+check("offset_silhouette: undo restores consumed sources and removes the result", u["success"]
+      and snapshot(CO) == before)
+
+# text (converted on copies; counters stay open) and black text exclusion
+r = call("offset_silhouette", document_path=TR, page_index=1, shape_ids=["6", "7", "8"], offset=0.5,
+         direction="outside", color="PANTONE Trans. White")
+d = r.get("data") or {}
+check("offset_silhouette: artistic, paragraph and outlined text take part (holes kept)", r["success"]
+      and all(x["parts"] == ["text"] for x in d["participants"]) and d["participant_count"] == 3
+      and d["holes"] > 10 and d["offset"]["achieved_min_side"] >= 0.49, r.get("error") or d.get("holes"))
+call("undo", document_path=TR)
+r = call("offset_silhouette", document_path=TR, page_index=1, shape_ids=["4", "8", "6"], offset=0.5,
+         exclude_colors=BLACK, color="PANTONE Trans. White")
+d = r.get("data") or {}
+check("offset_silhouette: text with a black run or black outline is excluded",
+      r["success"] and {x["id"] for x in d["skipped"]} == {"4", "8"} and d["participant_count"] == 1,
+      r.get("error") or d.get("skipped"))
+call("undo", document_path=TR)
+
+# groups expand to their leaves; PowerClips refused
+r = call("offset_silhouette", document_path=SU, page_index=1, shape_ids=["6", "15"], offset=1,
+         color="PANTONE Trans. White")
+d = r.get("data") or {}
+sources = {x["id"]: x["source"] for x in d.get("participants", [])}
+check("offset_silhouette: groups (flat and 4 levels deep) expand to 7 leaves", r["success"]
+      and sources == {"4": "6", "5": "6", "7": "15", "8": "15", "10": "15", "12": "15", "14": "15"}, sources)
+call("undo", document_path=SU)
+r = call("offset_silhouette", document_path=SU, page_index=1, shape_ids=["21"], offset=1)
+check("offset_silhouette: a PowerClip container is refused", not r["success"]
+      and "PowerClip" in refused_reasons(r).get("21", ""), r.get("error"))
+
+# effects: control shape allowed, effect group and generated objects refused
+r = call("offset_silhouette", document_path=EF, page_index=1, shape_ids=["4"], offset=1, color="PANTONE Trans. White")
+check("offset_silhouette: an effect's control shape takes part", r["success"]
+      and r["data"]["participant_count"] == 1, r.get("error"))
+call("undo", document_path=EF)
+before = snapshot(EF)
+r = call("offset_silhouette", document_path=EF, page_index=1, shape_ids=["6", "5"], offset=1)
+reasons = refused_reasons(r)
+check("offset_silhouette: an effect group and an effect-generated object are refused, nothing changed",
+      not r["success"] and "effect group" in reasons.get("6", "") and "generated by an effect" in reasons.get("5", "")
+      and snapshot(EF) == before, reasons)
+
+# layers: locked, master, mixed pages
+r = call("offset_silhouette", document_path=LA, page_index=1, shape_ids=["17", "14"], offset=1, target_layer="Art")
+check("offset_silhouette: a kept source on a locked layer may take part (result on Art)", r["success"]
+      and r["data"]["layer"] == "Art", r.get("error"))
+call("undo", document_path=LA)
+before = snapshot(LA)
+r = call("offset_silhouette", document_path=LA, page_index=1, shape_ids=["14"], offset=1, target_layer="Locked")
+check("offset_silhouette: a locked target layer is refused", not r["success"] and "locked" in r["error"], r.get("error"))
+r = call("offset_silhouette", document_path=LA, page_index=1, shape_ids=["17", "14"], offset=1, target_layer="Art",
+         keep_sources=False)
+check("offset_silhouette: consuming a source on a locked layer is refused", not r["success"]
+      and "locked" in refused_reasons(r).get("17", ""), r.get("error"))
+r = call("offset_silhouette", document_path=LA, page_index=1, shape_ids=["22"], offset=1)
+check("offset_silhouette: a master-layer object is refused", not r["success"]
+      and "master" in refused_reasons(r).get("22", ""), r.get("error"))
+r = call("offset_silhouette", document_path=LA, page_index=1, shape_ids=["14", "18"], offset=1)
+check("offset_silhouette: IDs from two pages are refused (page 2 ID not on page 1)", not r["success"]
+      and "18" in r["error"], r.get("error"))
+check("offset_silhouette: refusals changed nothing", snapshot(LA) == before)
+
+# an offset that removes everything; argument validation
+before = snapshot(AR)
+r = call("offset_silhouette", document_path=AR, page_index=1, shape_ids=["13"], offset=2, unit="pt")
+check("offset_silhouette: an inset that removes the shape fails and the page is unchanged", not r["success"]
+      and "removes" in r["error"] and "unchanged" in r["error"] and snapshot(AR) == before, r.get("error"))
+r = call("offset_silhouette", document_path=AR, page_index=1, shape_ids=["13"], offset=-1)
+r2 = call("offset_silhouette", document_path=AR, page_index=1, shape_ids=["13"], offset=1, unit="furlong")
+check("offset_silhouette: negative offset and unknown unit rejected before any edit", not r["success"]
+      and not (isinstance(r2, dict) and r2.get("success")) and snapshot(AR) == before, (r.get("error"), r2))
+r = call("offset_silhouette", document_path=AR, page_index=1, shape_ids=["7"], offset=1,
+         exclude_colors=["PANTONE Blakc C"])
+check("offset_silhouette: an exclusion that matches nothing (typo) is named in exclude_unmatched", r["success"]
+      and r["data"].get("exclude_unmatched") == ["PANTONE Blakc C"], r.get("error") or r.get("data"))
+call("undo", document_path=AR)
+
+# combine_shapes on colors.cdr: an overlapping duplicate (1 in squares, 0.5 in apart)
+r = call("duplicate_shapes", document_path=CO, page_index=1, shape_ids=["4"], dx=0.5, unit="in")
+D = r["data"]["new_ids"][0] if r["success"] else None
+check("duplicate_shapes: copy offset by 0.5 in", r["success"] and abs(r["data"]["copies"][0]["bounds"][0] - 1.5) < 1e-6,
+      r.get("error") or r["data"]["copies"])
+base = snapshot(CO)
+S = dict(document_path=CO, page_index=1)
+
+
+def combined(operation, ids, **extra):
+    r = call("combine_shapes", **S, shape_ids=ids, operation=operation, **extra)
+    return r, (r.get("data") or {}).get("results", [{}])
+
+
+r, res = combined("weld", ["4", D])
+check("combine_shapes weld (preserve_order: adjacent duplicate): union area 1.5, between the old neighbors",
+      r["success"] and abs(res[0]["area"] - 1.5) < 1e-6 and res[0]["layer"] == "Spots"
+      and r["data"].get("stack_index") is not None, r.get("error") or res)
+call("undo", **{"document_path": CO})
+check("combine_shapes weld: undo restores", snapshot(CO) == base)
+for operation, area, subpaths in (("trim", 0.5, 1), ("intersect", 0.5, 1), ("combine", 2.0, 2)):
+    r, res = combined(operation, ["4", D])
+    check(f"combine_shapes {operation}: area {area}, {subpaths} subpath(s), sources consumed", r["success"]
+          and abs(res[0]["area"] - area) < 1e-6 and res[0]["subpaths"] == subpaths
+          and not {"4", D} & (page_ids(CO) - set(r["data"]["result_ids"])), r.get("error") or res)
+    call("undo", document_path=CO)
+r, res = combined("combine", ["4", "6"], preserve_order=False)
+rid = r["data"]["result_ids"][0]
+r, res = combined("break_apart", [rid])
+check("combine_shapes break_apart: a combined curve splits into its 2 subpaths", r["success"]
+      and len(r["data"]["result_ids"]) == 2 and all(x["subpaths"] == 1 for x in res), r.get("error") or res)
+call("undo", document_path=CO)
+call("undo", document_path=CO)
+check("combine_shapes: combine + break apart undone in two steps", snapshot(CO) == base)
+r, res = combined("weld", ["4", "8"], preserve_order=False, keep_sources=True, target_layer="Outlines")
+check("combine_shapes: keep_sources welds copies onto target_layer, sources kept", r["success"]
+      and res[0]["layer"] == "Outlines" and {"4", "8"} <= page_ids(CO), r.get("error") or res)
+call("undo", document_path=CO)
+r, res = combined("intersect", ["4", "5"])
+check("combine_shapes: disjoint intersect fails, undone, page unchanged", not r["success"]
+      and "unchanged" in r["error"] and snapshot(CO) == base, r.get("error"))
+# consecutive-weld safety refusals (old weld_consecutive_shapes)
+r, _ = combined("weld", ["22", "23"])
+check("combine_shapes weld refuses shapes without a uniform fill", not r["success"] and "uniform fill" in r["error"],
+      r.get("error"))
+r = call("combine_shapes", document_path=SU, page_index=1, shape_ids=["4", "5"], operation="weld")
+check("combine_shapes weld refuses group members (not direct layer children)", not r["success"]
+      and "inside groups" in r["error"], r.get("error"))
+r = call("combine_shapes", document_path=SU, page_index=1, shape_ids=["6", "15"], operation="weld",
+         preserve_order=False)
+check("combine_shapes refuses groups", not r["success"] and "group" in refused_reasons(r).get("6", ""), r.get("error"))
+r = call("combine_shapes", document_path=EF, page_index=1, shape_ids=["4", "7"], operation="weld",
+         preserve_order=False)
+check("combine_shapes refuses shapes with effects", not r["success"]
+      and "effect" in refused_reasons(r).get("4", ""), r.get("error"))
+r = call("combine_shapes", document_path=EF, page_index=1, shape_ids=["13", "14"], operation="weld")
+check("combine_shapes weld refuses a different overprint flag", not r["success"] and "overprint" in r["error"],
+      r.get("error"))
+r = call("combine_shapes", document_path=LA, page_index=1, shape_ids=["17", "14"], operation="weld",
+         preserve_order=False)
+check("combine_shapes refuses consuming a shape on a locked layer", not r["success"]
+      and "locked" in refused_reasons(r).get("17", ""), r.get("error"))
+r, _ = combined("weld", ["4", D], keep_sources=True)
+check("combine_shapes: preserve_order with keep_sources rejected", not r["success"] and "preserve_order" in r["error"],
+      r.get("error"))
+check("combine_shapes: refusals changed nothing", snapshot(CO) == base)
+
+# duplicate_shapes
+r = call("duplicate_shapes", document_path=CO, page_index=1, shape_ids=["4", "5", "6", "19"], dx=0.25, dy=-0.25,
+         unit="in")
+d = r.get("data") or {}
+check("duplicate_shapes: four copies (three adjacent on one layer) in input order, offset verified", r["success"]
+      and len(d["new_ids"]) == 4 and [x["source"] for x in d["copies"]] == ["4", "5", "6", "19"], r.get("error") or d)
+call("undo", document_path=CO)
+check("duplicate_shapes: undo restores", snapshot(CO) == base)
+r = call("duplicate_shapes", document_path=SU, page_index=1, shape_ids=["15"], target_layer="PowerClip", dy=-1,
+         unit="in")
+check("duplicate_shapes: a nested group copied onto another layer", r["success"]
+      and r["data"]["copies"][0]["layer"] == "PowerClip", r.get("error") or r.get("data"))
+call("undo", document_path=SU)
+r = call("duplicate_shapes", document_path=LA, page_index=1, shape_ids=["17"])
+r2 = call("duplicate_shapes", document_path=EF, page_index=1, shape_ids=["6"])
+check("duplicate_shapes: refuses copies onto a locked layer and effect groups", not r["success"]
+      and "locked" in refused_reasons(r).get("17", "") and not r2["success"] and refused_reasons(r2).get("6"),
+      (r.get("error"), refused_reasons(r2)))
+
+# inspect_shapes effect_details (replaces inspect_contours) and apply_contour
+info = {s["shape_id"]: s for s in call("inspect_shapes", document_path=EF, page_index=1)["data"]["shapes"]}
+c4 = (info["4"].get("effect_details") or [{}])[0]
+c7 = (info["7"].get("effect_details") or [{}])[0]
+s11 = (info["11"].get("effect_details") or [{}])[0]
+check("inspect_shapes effect_details: outside contour (offset, steps, fill, group)", c4.get("type") == "contour"
+      and c4["direction"] == "outside" and abs(c4["offset"] - 0.1) < 1e-6 and c4["steps"] == 1
+      and c4["fill_color"].get("name", c4["fill_color"].get("ink")) == "PANTONE 186 C" and c4["group_id"] == "6", c4)
+check("inspect_shapes effect_details: inside contour with 2 steps", c7.get("direction") == "inside"
+      and c7["steps"] == 2 and abs(c7["offset"] - 0.15) < 1e-6 and c7["group_id"] == "10", c7)
+check("inspect_shapes effect_details: drop shadow type and group", s11.get("type") == "drop_shadow"
+      and s11.get("group_id") == "12", s11)
+before = snapshot(EF)
+r = call("apply_contour", document_path=EF, page_index=1, shape_ids=["13", "14"], direction="outside", offset=2,
+         unit="pt", steps=2, fill="PANTONE 300 C", corner="round")
+info = {s["shape_id"]: s for s in call("inspect_shapes", document_path=EF, page_index=1)["data"]["shapes"]}
+got = [(info[i].get("effect_details") or [{}])[0] for i in ("13", "14")]
+check("apply_contour: two exact IDs, read back through effect_details", r["success"]
+      and all(g.get("steps") == 2 and g.get("corner") == "round" and abs(g.get("offset", 0) - 2 / 72) < 1e-5
+              for g in got), r.get("error") or got)
+call("undo", document_path=EF)
+check("apply_contour: undo restores", snapshot(EF) == before)
+
+# separate_effect: by control shape, by effect group, drop shadow
+r = call("separate_effect", document_path=EF, page_index=1, shape_ids=["4", "10"], effect="contour")
+d = r.get("data") or {}
+controls = {x["id"]: x["control_id"] for x in d.get("shapes", [])}
+info = {s["shape_id"]: s for s in call("inspect_shapes", document_path=EF, page_index=1)["data"]["shapes"]}
+check("separate_effect: contour by control and by group ID; effects gone", r["success"]
+      and controls == {"4": "4", "10": "7"} and not info["4"].get("effect_details")
+      and not info["7"].get("effect_details"), r.get("error") or controls)
+call("undo", document_path=EF)
+r = call("separate_effect", document_path=EF, page_index=1, shape_ids=["11"], effect="drop_shadow")
+check("separate_effect: drop shadow becomes plain objects", r["success"] and r["data"]["shapes"][0]["result_ids"],
+      r.get("error") or r.get("data"))
+call("undo", document_path=EF)
+r = call("separate_effect", document_path=EF, page_index=1, shape_ids=["13"])
+check("separate_effect: a shape without the effect is refused", not r["success"] and refused_reasons(r).get("13"),
+      r.get("error"))
+check("separate_effect: undo and refusals restore the page", snapshot(EF) == before)
+
+# convert_to_curves on several exact IDs
+before = snapshot(TR)
+r = call("convert_to_curves", document_path=TR, page_index=1, shape_ids=["6", "7", "8"])
+d = r.get("data") or {}
+check("convert_to_curves: three texts converted (paragraph text to a group), IDs kept", r["success"]
+      and all(x["type_after"] in (3, 7) and x["id_after"] == x["id"] for x in d["shapes"]), r.get("error") or d)
+call("undo", document_path=TR)
+check("convert_to_curves: undo restores the text", snapshot(TR) == before)
+r = call("convert_to_curves", document_path=SU, page_index=1, shape_ids=["6"])
+check("convert_to_curves: a group is refused", not r["success"] and refused_reasons(r).get("6"), r.get("error"))
+
+for path in GEO.values():
+    r = call("close_document", document_path=path, discard_changes=True)
+    check(f"cleanup: close {Path(path).name}", r["success"], r.get("error"))
+listed13 = {tool.name for tool in asyncio.run(_catalog())}
+check("catalog: offset_silhouette, combine_shapes, duplicate_shapes, separate_effect added; boolean_operation, "
+      "weld_copies_by_id, weld_consecutive_shapes, break_contour_apart, inspect_contours, duplicate_shape_by_id, "
+      "duplicate_shapes_by_id, convert_text_to_curves removed",
+      {"offset_silhouette", "combine_shapes", "duplicate_shapes", "separate_effect", "convert_to_curves",
+       "apply_contour"} <= listed13 and not {"boolean_operation", "weld_copies_by_id", "weld_consecutive_shapes",
+                                             "break_contour_apart", "inspect_contours", "duplicate_shape_by_id",
+                                             "duplicate_shapes_by_id", "convert_text_to_curves"} & listed13)
 
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

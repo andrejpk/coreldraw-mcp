@@ -157,9 +157,9 @@ def verify(template):
                                                    for a, b in zip(got, exp)):
                     res["issues"].append({"shape": s["name"], "check": "text runs", "want": exp, "got": r["runs"]})
         if want.get("effect") == "contour":
-            r = tool("inspect_contours", document_path=path, page_index=p, shape_id=sid)
-            if r.get("success"):
-                res.setdefault("contours", {})[s["name"]] = r["contours"]
+            # E13: inspect_contours folded into inspect_shapes (effect_details)
+            details = [d for d in rec.get("effect_details", []) if d.get("type") == "contour"]
+            res.setdefault("contours", {})[s["name"]] = details
         if want.get("effect") == "drop_shadow":
             res.setdefault("drop_shadow_effects", {})[s["name"]] = rec.get("effects")
     if template["file"] == "effects.cdr":

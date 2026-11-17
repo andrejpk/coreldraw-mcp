@@ -1,4 +1,7 @@
-"""In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, partial-weld rollback, and why edits activate their document (Undo)."""
+"""In-process failure-path checks: layer and hidden-printable proof restore, render_plates without Ghostscript, rollback of
+geometry edits that fail part way (combine_shapes, offset_silhouette after the union, after the contour, and when its
+time budget runs out), E13b refusals (locked layer, mixed pages, effect-generated input) on copies of layers.cdr and
+effects.cdr, and why edits activate their document (Undo)."""
 import json, sys
 sys.path.insert(0, ".")
 from core.connection import get_connection
@@ -67,25 +70,185 @@ print("PASS" if not r.success and "GHOSTSCRIPT_EXE" in r.error and not os.path.e
       "render_plates without Ghostscript fails clearly and writes nothing:", r.error)
 
 
-# The weld rollback depends on detecting a partial weld and on Undo(1) restoring the sources.
-def partial():
+# E13: a geometry edit that fails part way is undone as one step (core.shapeops.undoable): the sources come back,
+# and an earlier edit in the same document is not undone with it.
+def layer_ids(name):
+    def run():
+        doc = fixture()
+        layer = [l for l in doc.Pages(1).Layers if l.Name == name][0]
+        return sorted(str(x.StaticID) for x in layer.Shapes)
+    return conn.safe_call(run)["result"]
+
+
+def earlier_edit():
     doc = fixture()
-    layer = [l for l in doc.Pages(1).Layers if l.Name == "Weld"][0]
-    find = lambda i: [x for x in layer.Shapes if str(x.StaticID) == IDS[i]][0]  # noqa: E731
-    c1, c2, c3 = find("c1"), find("c2"), find("c3")
-    doc.BeginCommandGroup("Weld consecutive shapes")
-    result = c2.Weld(c1, False, False)
-    doc.EndCommandGroup()
-    result_id = str(result.StaticID)
-    survivors = geometry._surviving(layer, [IDS["c1"], IDS["c2"], IDS["c3"]])
+    layer = [l for l in doc.Pages(1).Layers if l.Name == "Ink B"][0]
+    return str(layer.CreateRectangle2(150, 150, 5, 5).StaticID)
+
+
+marker = conn.safe_call(earlier_edit)["result"]
+weld_before = layer_ids("Weld")
+
+
+def failing_weld(shapes, ids, keep, layer, order):
+    stack = order["stack"]
+    shapes[stack[1]].Weld(shapes[stack[0]], False, False)  # a partial weld really happens
+    raise RuntimeError("simulated failure after a partial weld")
+
+
+original_weld = geometry._OPERATIONS["weld"]
+geometry._OPERATIONS["weld"] = failing_weld
+try:
+    r = geometry.combine_shapes(DOC, 1, [IDS["c2"], IDS["c3"], IDS["c1"]], "weld")
+finally:
+    geometry._OPERATIONS["weld"] = original_weld
+ok = (not r.success and "simulated" in r.error and "page is unchanged" in r.error
+      and layer_ids("Weld") == weld_before and marker in layer_ids("Ink B"))
+print("PASS" if ok else "FAIL", "combine_shapes: a failure after a partial weld is undone; an earlier edit survives:",
+      r.error, layer_ids("Weld"), weld_before)
+
+
+def failing_contour(*args, **kwargs):
+    raise RuntimeError("simulated failure after the copies were made")
+
+
+from tools import silhouette  # noqa: E402
+original_union = silhouette._union
+
+
+def union_then_fail(*args, **kwargs):
+    original_union(*args, **kwargs)  # copies and the welded temporary exist now
+    failing_contour()
+
+
+silhouette._union = union_then_fail
+try:
+    r = silhouette.offset_silhouette(DOC, 1, [IDS["c1"], IDS["b"]], 1.0, unit="mm", target_layer="Ink B")
+finally:
+    silhouette._union = original_union
+ok = (not r.success and "simulated" in r.error and "page is unchanged" in r.error
+      and layer_ids("Weld") == weld_before and marker in layer_ids("Ink B"))
+print("PASS" if ok else "FAIL", "offset_silhouette: a failure after the temporary copies is undone; an earlier edit "
+      "survives:", r.error)
+
+
+def remove_marker():
+    doc = fixture()
+    layer = [l for l in doc.Pages(1).Layers if l.Name == "Ink B"][0]
+    [x for x in layer.Shapes if str(x.StaticID) == marker][0].Delete()
+
+
+conn.safe_call(remove_marker)
+
+
+# E13b: refusals before any change (locked layer, mixed pages, effect-generated input) and rollbacks part way,
+# on fresh copies of layers.cdr and effects.cdr.
+import shutil  # noqa: E402
+from core.structure import page_layers  # noqa: E402
+from tools import effects  # noqa: E402
+
+GEO = {}
+for stem in ("layers", "effects"):
+    GEO[stem] = FX + rf"\e13b_fail_{stem}.cdr"
+    shutil.copyfile(rf"C:\CorelMcpLab\templates\{stem}.cdr", GEO[stem])
+    conn.safe_call(lambda path=GEO[stem]: conn.app.OpenDocument(path))
+LA, EF = GEO["layers"], GEO["effects"]
+
+
+def ids_of(path, page=1):
+    def run():
+        doc, = find_documents(conn.app, path)
+        return sorted(e.shape_id for v in page_layers(doc, doc.Pages(page), fresh=True) for e in v.structure.entries)
+    return conn.safe_call(run)["result"]
+
+
+def report(ok, label, detail):
+    print("PASS" if ok else "FAIL", label, detail)
+
+
+def refused(r):
+    return {x["id"]: x["reason"] for x in (r.data or {}).get("refused", [])}
+
+
+la0, ef0 = ids_of(LA), ids_of(EF)
+r1 = silhouette.offset_silhouette(LA, 1, ["17", "14"], 1.0, target_layer="Art", keep_sources=False)
+r2 = silhouette.offset_silhouette(LA, 1, ["14"], 1.0, target_layer="Locked")
+r3 = geometry.combine_shapes(LA, 1, ["17", "14"], "weld", preserve_order=False)
+r4 = geometry.duplicate_shapes(LA, 1, ["17"])
+r5 = geometry.convert_to_curves(LA, 1, ["17"])
+report(not any(r.success for r in (r1, r2, r3, r4, r5)) and "locked" in refused(r1).get("17", "")
+       and "locked" in r2.error and "locked" in refused(r3).get("17", "") and "locked" in refused(r4).get("17", "")
+       and "locked" in refused(r5).get("17", "") and ids_of(LA) == la0,
+       "locked layer: offset_silhouette (consume, target), combine_shapes, duplicate_shapes, convert_to_curves refuse; "
+       "page unchanged:", [r.error for r in (r1, r2, r3, r4, r5)])
+
+r1 = silhouette.offset_silhouette(LA, 1, ["14", "18"], 1.0)
+r2 = geometry.combine_shapes(LA, 1, ["14", "18"], "weld", preserve_order=False)
+r3 = geometry.duplicate_shapes(LA, 1, ["14", "21"])
+report(not any(r.success for r in (r1, r2, r3)) and all("18" in r.error or "21" in r.error for r in (r1, r2, r3))
+       and ids_of(LA) == la0,
+       "mixed pages: IDs from pages 2 and 3 are not found on page 1; nothing changed:", [r.error for r in (r1, r2, r3)])
+
+r1 = silhouette.offset_silhouette(EF, 1, ["5"], 1.0)
+r2 = geometry.combine_shapes(EF, 1, ["5", "13"], "weld", preserve_order=False)
+r3 = geometry.convert_to_curves(EF, 1, ["5"])
+r4 = effects.apply_contour(EF, 1, ["6"], "outside", 1.0)
+r5 = geometry.duplicate_shapes(EF, 1, ["5"])
+report(not any(r.success for r in (r1, r2, r3, r4, r5)) and "effect" in refused(r1).get("5", "")
+       and "effect" in refused(r2).get("5", "") and "effect" in refused(r3).get("5", "")
+       and "effect" in refused(r4).get("6", "") and "effect" in refused(r5).get("5", "") and ids_of(EF) == ef0,
+       "effect-generated input (contour step 5, contour group 6) refused by every geometry tool; page unchanged:",
+       [r.error for r in (r1, r2, r3, r4, r5)])
+
+
+# Rollback part way: the contour is created and separated, then a failure; and the time budget running out.
+original_contour = silhouette._contour
+
+
+def contour_then_fail(*args, **kwargs):
+    original_contour(*args, **kwargs)
+    raise RuntimeError("simulated failure after the contour was separated")
+
+
+silhouette._contour = contour_then_fail
+try:
+    r = silhouette.offset_silhouette(LA, 1, ["14", "15"], 1.0, target_layer="Art")
+finally:
+    silhouette._contour = original_contour
+report(not r.success and "simulated" in r.error and "page is unchanged" in r.error and ids_of(LA) == la0,
+       "offset_silhouette: a failure after the contour step is undone:", r.error)
+
+original_budget = silhouette._BUDGET_SECONDS
+silhouette._BUDGET_SECONDS = 0.0
+try:
+    r = silhouette.offset_silhouette(LA, 1, ["14", "15"], 1.0, target_layer="Art")
+finally:
+    silhouette._BUDGET_SECONDS = original_budget
+report(not r.success and "Stopped after" in r.error and "page is unchanged" in r.error and ids_of(LA) == la0,
+       "offset_silhouette: running out of the time budget stops and undoes the edit:", r.error)
+
+r = effects.separate_effect(EF, 1, ["4", "7"], effect="contour")
+
+
+def undo_ef():
+    doc, = find_documents(conn.app, EF)
+    activate_document(conn.app, doc)
     doc.Undo(1)
-    restored = geometry._surviving(layer, [IDS["c1"], IDS["c2"], IDS["c3"]])
-    return {"after_partial": sorted(survivors), "after_undo": sorted(restored), "result": result_id}
 
 
-r = conn.safe_call(partial); print(r); r = r["result"]
-ok = r["after_partial"] == [IDS["c3"]] and r["after_undo"] == sorted([IDS["c1"], IDS["c2"], IDS["c3"]])
-print("PASS" if ok else "FAIL", "rollback primitive: _surviving detects a partial weld and Undo(1) restores sources", r)
+conn.safe_call(undo_ef)
+report(r.success and ids_of(EF) == ef0, "separate_effect on two controls of one layer, then one undo restores:",
+       r.error or [x["result_ids"] for x in r.data["shapes"]])
+
+
+def close_geo():
+    for path in GEO.values():
+        for doc in find_documents(conn.app, path):
+            doc.Dirty = False
+            doc.Close()
+
+
+conn.safe_call(close_geo)
 
 
 # Edits activate their document because CorelDRAW applies Document.Undo to the active document.

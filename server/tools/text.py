@@ -349,26 +349,6 @@ def check_text_overflow(shape_id: str, document_path: str = "") -> ToolResult:
     return ToolResult.fail(result.get("error", "检查文字溢出失败"))
 
 
-def convert_text_to_curves(document_path: str, shape_id: str) -> ToolResult:
-    """将文字转换为曲线（印前必须操作，防止字体依赖）。
-
-    Active document only (document_path); lengths in document units.
-    """
-    conn = get_connection()
-
-    def _convert():
-        shape = _find_text_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到文字形状: {shape_id}")
-        shape.ConvertToCurves()
-        return {"shape_id": shape_id, "converted": True}
-
-    result = call_on_active(conn, document_path, _convert)
-    if result["success"]:
-        return ToolResult.ok(f"文字已转曲: {shape_id}", **result["result"])
-    return ToolResult.fail(result.get("error", "文字转曲失败"))
-
-
 def create_text_frame(document_path: str, x: float, y: float, width: float, height: float, text: str) -> ToolResult:
     """创建段落文本框。返回形状 ID。
 

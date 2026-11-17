@@ -237,61 +237,6 @@ def set_shape_position(document_path: str, shape_id: str, x: float, y: float) ->
     return ToolResult.fail(result.get("error", "设置位置失败"))
 
 
-_BOOLEAN_OPS = {"union": "Weld", "intersect": "Intersect", "subtract": "Trim", "exclude": "Simplify"}
-
-
-def boolean_operation(document_path: str, shape_ids: str, operation: str) -> ToolResult:
-    """对指定形状执行布尔运算。shape_ids 为逗号分隔的 ID 列表，operation 支持 union/intersect/subtract/exclude。
-
-    Active document only (document_path); lengths in document units.
-    """
-    conn = get_connection()
-
-    if operation not in _BOOLEAN_OPS:
-        return ToolResult.fail(f"不支持的布尔运算: {operation}，可选: {', '.join(_BOOLEAN_OPS.keys())}")
-
-    def _operate():
-        ids = [s.strip() for s in shape_ids.split(",") if s.strip()]
-        if len(ids) < 2:
-            raise ValueError("至少需要两个形状进行布尔运算")
-        page = conn.app.ActiveDocument.ActivePage
-        selected = []
-        for sid in ids:
-            shape = _find_shape(sid)
-            if shape is None:
-                raise ValueError(f"未找到形状: {sid}")
-            selected.append(shape)
-        selection = _create_shape_range(selected)
-        method = getattr(selection, _BOOLEAN_OPS[operation])
-        method()
-        return {"operation": operation, "input_ids": ids, "result": "success"}
-
-    result = call_on_active(conn, document_path, _operate)
-    if result["success"]:
-        return ToolResult.ok(f"布尔运算完成: {operation}", **result["result"])
-    return ToolResult.fail(result.get("error", "布尔运算失败"))
-
-
-def convert_to_curves(document_path: str, shape_id: str) -> ToolResult:
-    """将形状转换为曲线（印前必须操作）。
-
-    Active document only (document_path); lengths in document units.
-    """
-    conn = get_connection()
-
-    def _convert():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        shape.ConvertToCurves()
-        return {"shape_id": shape_id, "converted": True}
-
-    result = call_on_active(conn, document_path, _convert)
-    if result["success"]:
-        return ToolResult.ok(f"已转曲: {shape_id}", **result["result"])
-    return ToolResult.fail(result.get("error", "转曲失败"))
-
-
 def group_shapes(document_path: str, shape_ids: str) -> ToolResult:
     """将多个形状组合为一个群组。shape_ids 为逗号分隔的 ID 列表。
 
