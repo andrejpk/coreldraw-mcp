@@ -23,7 +23,8 @@ Simplify where it makes sense. Merge narrow tools into fewer, more flexible ones
 - Start the server from `<worktree>\server` with `C:\repos\gh\coreldraw-mcp\.venv\Scripts\python.exe server.py --local-http` in the background (port 8765). First check that nothing else listens on 8765; if a server you did not start is running, stop and report rather than killing it. The MCP client is `scripts/validation/mc.py` (`call(name, **args)`).
 - In-process scripts run from `server/` with `sys.path.insert(0, ".")` and `core.connection.get_connection().safe_call(fn)`.
 - The bridge cancels any single COM operation after 60 s. Chunk long work.
-- Batched reads: `Shape.Evaluate("array(@com.X, ...)")` runs many reads in one call; see `server/tools/inspection.py` (`_query`, `_layer_structure`). Direct dynamic-dispatch reads cost about 1–25 ms each.
+- Batched reads: `Shape.Evaluate("array(@com.X, ...)")` runs many reads in one call; see `server/core/structure.py` (validated page-structure cache: `page_layers`, `read_entries`, `resolve_shapes`, `walk_layer`, `invalidate`) and `server/tools/inspection.py` (`_query`, `_record_query`). Reuse the cache; never walk a page yourself. Pure reads go through `conn.read_call` (interruptible at its deadline between COM calls); edits use `conn.safe_call`. Direct dynamic-dispatch reads cost about 1–25 ms each. pywin32 ignores keyword args to `FindShape(s)`: pass them positionally.
+- Document targeting: `server/core/targets.py` (`resolve_document(app, path, activate=True)` for edits, because `Document.Undo` acts on the active document) and `server/core/units.py`.
 - Findings from earlier work: `docs/requirements/2026-11-16-screen-separation-tools.md`, section "Fixture validation, 2026-11-17". Fixture catalog: `C:\CorelMcpLab\templates\MANIFEST.md`.
 
 ## Conventions
