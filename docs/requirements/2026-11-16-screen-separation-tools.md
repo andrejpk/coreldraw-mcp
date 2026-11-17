@@ -42,7 +42,7 @@ The live per-page, per-plate print preview still uses CorelDRAW's UI. An isolate
 
 ### Fixture validation, 2026-11-17
 
-All checks ran on CorelDRAW 2022 (24.4.0.636) through the local MCP HTTP server. Disposable fixtures were built by script, and no production document was opened or changed. The acceptance fixture has text with whitespace in a legacy spot ink, a weld stack between foreign neighbors, overprinting and hidden layers, and a same-named layer on page 2. All 33 MCP checks and 3 in-process failure-path checks passed.
+All checks ran on CorelDRAW 2022 (24.4.0.636) through the local MCP HTTP server. Disposable fixtures were built by script, and no production document was opened or changed. The acceptance fixture has text with whitespace in a legacy spot ink, a weld stack between foreign neighbors, overprinting and hidden layers, and a same-named layer on page 2. All 37 MCP checks (including Ghostscript plate checks) and 3 in-process failure-path checks passed.
 
 #### Text fill runs
 
@@ -60,10 +60,10 @@ All checks ran on CorelDRAW 2022 (24.4.0.636) through the local MCP HTTP server.
 
 #### Single-layer proof
 
-- **Finding.** Publish to PDF follows layer **Printable**, not **Visible**. A hidden but printable layer is published, and changing Printable sets `Document.Dirty`. Each PDF names only the separations it actually uses, so the spot list identifies which layers were included.
-- **Accepted.** `export_layer_proof_pdf` takes an exact document, page, and page-local layer, and rejects master or special layers. Every other layer, including shared master layers, is non-printing only while publishing. Afterward the tool restores and verifies each layer's printability, the PDF settings, the active page, the document unit, and the dirty flag.
-- **Fixture results.** The independent PDF stream scan found only `PANTONE 300 C` with fill overprint for **Ink B**, and only `PANTONE 354 C` for hidden **Hidden C**. The **Weld** layer showed only its two inks, and page 2 **Ink B** showed only `PANTONE 485 C`. The document, PDF, and layer state was identical after every publish, after each refused request (existing output, special layer), and after a simulated publish failure.
-- **Open.** Ghostscript was not installed on this workstation, so no raster plates were checked. Render with `server/render_separation_proof.py` before judging overlap coverage.
+- **Finding.** Publish to PDF includes layers by **Printable**, and changing Printable sets `Document.Dirty`. A hidden but printable layer is written as a PDF optional-content layer that is off by default (`/OCProperties /OFF`). Its ink is in the file, but Ghostscript and other renderers that honor PDF layers show a blank plate. Each PDF names only the separations it uses.
+- **Accepted.** `export_layer_proof_pdf` takes an exact document, page, and page-local layer, and rejects master or special layers. Every other layer, including shared master layers, is non-printing only while publishing, and a hidden target is made visible. Afterward the tool restores and verifies each layer's printability and visibility, the PDF settings, the active page, the document unit, and the dirty flag.
+- **Fixture results.** Ghostscript 10.08.0 `tiffsep` plates and an independent PDF stream scan found only `PANTONE 300 C` with fill overprint for **Ink B**, and only `PANTONE 354 C` for hidden **Hidden C**. The **Weld** layer showed only its two inks, and page 2 **Ink B** showed only `PANTONE 485 C`. The document, PDF, and layer state was identical after every publish, after each refused request (existing output, special layer), and after a simulated publish failure.
+- **Plates.** Rendered with `server/render_separation_proof.py`, each proof inked only its layer's plates, and CMYK plates stayed blank. Before the visibility fix, the hidden **Hidden C** proof rendered a blank `PANTONE 354 C` plate.
 
 #### Inspection round trips
 

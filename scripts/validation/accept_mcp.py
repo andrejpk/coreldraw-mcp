@@ -8,6 +8,16 @@ from pathlib import Path
 sys.path.insert(0, "."); sys.path.insert(0, sys.argv[1])
 from mc import call
 from pdfscan import scan
+import shutil
+from render_separation_proof import render
+GS = next(iter(sorted(Path("C:/Program Files/gs").glob("*/bin/gswin64c.exe"))), None) if Path("C:/Program Files/gs").is_dir() else None
+
+
+def inked_plates(pdf):
+    """Ghostscript tiffsep: names of plates with any visible ink."""
+    out = Path(pdf).with_suffix(".plates")
+    shutil.rmtree(out, ignore_errors=True)
+    return sorted(p["name"] for p in render(Path(pdf), out, GS, 72, 1)["plates"] if not p["blank"])
 from core.connection import get_connection
 FX = sys.argv[1].replace("/", "\\") + r"\fx"
 DOC = FX + r"\accept.cdr"
@@ -147,11 +157,16 @@ for name, spots, overprint in (("Ink B", ["PANTONE 300 C"], True), ("Hidden C", 
     found = scan(out) if r["success"] else {}
     check(f"layer proof {name!r}: only its inks", r["success"] and found["spots"] == spots,
           r.get("error") or (found, r["data"]["excluded_printable_layers"], f"{r['_seconds']}s"))
+    if GS:
+        check(f"layer proof {name!r}: Ghostscript inks only its plates", r["success"] and inked_plates(out) == spots,
+              inked_plates(out) if r["success"] else None)
     check(f"layer proof {name!r}: fill overprint preserved={overprint}", r["success"] and (found["overprint_fill_true"] > 0) == overprint)
     check(f"layer proof {name!r}: document and PDF settings unchanged", direct(pdf_state) == state0)
 r = call("export_layer_proof_pdf", document_path=DOC, page_index=2, layer_name="Ink B", output_path=FX + r"\proof-p2.pdf")
 found = scan(FX + r"\proof-p2.pdf") if r["success"] else {}
 check("layer proof: same-named layer on page 2 publishes only page 2 ink", found.get("spots") == ["PANTONE 485 C"], found)
+if GS:
+    check("layer proof: page 2 Ghostscript plates", inked_plates(FX + r"\proof-p2.pdf") == ["PANTONE 485 C"])
 r = call("export_layer_proof_pdf", document_path=DOC, page_index=1, layer_name="Guides", output_path=FX + r"\x.pdf")
 check("layer proof: master/special layer rejected", not r["success"], r.get("error"))
 r = call("export_layer_proof_pdf", document_path=DOC, page_index=1, layer_name="Ink B", output_path=FX + r"\proof-Ink_B.pdf")

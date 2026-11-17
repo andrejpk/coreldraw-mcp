@@ -13,6 +13,8 @@
 
 ---
 
+[2026-11-17 01:50] FIX Installed Ghostscript 10.08.0; layer proofs now make a hidden target visible (hidden layers exported as default-off PDF layers rendered blank); acceptance 37/37 with plate checks
+
 [2026-11-17 01:35] WIP PLAN MCP improvement experiment program started on claude/experiments-integration; protocol + backlog in docs/experiments/, E00 fixture agent running → ../../docs/experiments/backlog.md
 
 [2026-11-17 01:30] DONE Production follow-up tools: text fill runs, order-preserving weld, single-layer proof, batched inspection (1,152 s → 15.6 s) on branch claude/production-followup-tools → sessions/2026-11-17-0130.md
