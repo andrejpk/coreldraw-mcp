@@ -2,9 +2,9 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729, later merged 0d4f40a).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 12 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13, E13b, E07+E06, E19+E12).
+Budget: 20 child-agent cycles. Used: 13 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13, E13b, E07+E06, E19+E12, E14).
 
-Current: 67 tools, ~21.5k tokens, 17 ruff errors, acceptance 451/451 + failure 19/19.
+Current: 67 tools, ~13.9k tokens, 11 ruff errors, acceptance 465/465 + failure 19/19.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
 Status values: **backlog**, **in progress**, **completed: success | partial | failure**, **dropped**.
@@ -24,6 +24,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | E13 | `offset_silhouette`, `combine_shapes`, `duplicate_shapes`, `separate_effect` | completed: partial | Stopped early: CorelDRAW crashed twice during in-process probes (06:54 `BaseToolCore.dll`; 07:14 `VGCore.dll` in `Curve.WeldWith` while a live customer file was open — not dirty at 07:13, not edited). Code: 85 → 81 tools (added 4, removed 8, `convert_to_curves`/`apply_contour` take exact IDs). In-process: T6a underbase 13 calls / 9.4 s → 1 call / 1.4 s, inset 0.748 pt mean; black exclusion works. Acceptance suites NOT run, no MCP checks for new tools, no `render_plates(contain)` check; 400-object cap after a 1,870-object group passed 60 s. [results](results/e13.md) | **not merged** (needs validation on an idle CorelDRAW; consider `Shape.Weld` on temp copies instead of `Curve.WeldWith`) → merged via E13b |
 | E13b | Validate and fix E13 on an idle CorelDRAW | completed: success | No crash (same CorelDRAW PID throughout; open-document gate before every session). `offset_silhouette` now welds temp copies with `Shape.Weld` + contour effect (no in-memory curve APIs), 35 s self-undoing deadline, cap 1,000. Fixed multi-target same-layer bug in `duplicate_shapes`/`convert_to_curves`/`apply_contour`/`separate_effect`. T6a through MCP 9 calls / 9.2 s (underbase itself 1 call / 1.9 s); `render_plates(contain)` 0 px protrusion at 0.5 pt inset, seeded fault caught. E13+E13b net: 85 → 81 tools. Acceptance 365/365, failure 13/13, ruff 24, catalog ~22.6k tokens. Limits: ~100 outlined specks per call; `combine_shapes` has no deadline; effect groups refused. [results](results/e13b.md) | merged together with E13 |
 | E07+E06 | Layers + transform/arrange + delete/create/import | completed: success | 81 → 67 tools, catalog ~22.6k → ~21.5k tokens. 25 legacy tools → 11 exact-ID tools: added `list_layers`, `set_layer_properties`, `move_shapes_to_layer`, `transform_shapes`, `arrange_shapes`, `delete_shapes`, `create_shape`, `import_file` (working `Layer.Import`); `create_layer`, `group_shapes` (+ungroup), `powerclip` (place/extract) re-signed; `_find_shape` deleted; `combine_shapes` gets 35 s self-undo deadline. T6c 4 calls/1.65 s → 3/0.65 s; T6a 9/9.2 s → 6/7.7 s; Good News delete 300 nested specks 41.4 s → 3.6 s. Works around hidden-layer move/import quirks inside the undo step. Acceptance 451/451, failure 19/19, ruff 17. [results](results/e07.md) | merged |
+| E19+E12 | Catalog diet + feedback quality | completed: success | 67 tools unchanged; catalog ~21.5k → **~13.9k tokens (−35 %)**: output schema removed (`output_schema=None`, payload byte-identical), nullable branches dropped, all descriptions English, shared conventions in a 1.1k-char server instructions block, annotations set. New `core/results.py` (`respond`/`failure`) replaces 6 wrappers and ~40 inline checks; failures carry `data.state` + target context; COM errors readable; silent `except: pass` removed, which exposed real bugs (`set_text_style` reported unmade changes, `check_text_overflow_all` skipped overflow). Catalog budget check (`catalog_size.py --budget`, in `accept_mcp`). Acceptance 465/465, failure 19/19, ruff 11. [results](results/e19.md) | merged |
 
 ## Queue (in run order, revised after E01)
 
@@ -37,8 +38,8 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | 7 | E04+E11 | `find_shapes` with filters and artifact presets (zero-size, invisible, stacked duplicates, off-page, hairline, spot:<name>, Trans. White, text); replaces `find_shape_by_name`, `select_shapes`, `list_all_text_shapes`, `check_text_overflow_all` | completed: success |
 | 8 | E13 | `offset_silhouette` (copy + weld + contour + break apart + target layer + overprint, exclusions by color) and `combine_shapes` (weld/trim/intersect/combine, keep sources, target layer) | completed: partial (not merged; follow-up E13b) |
 | 9 | E07+E06 | Layers + transform/arrange (merged to save a cycle): `list_layers` / `set_layer_properties` / `move_shapes_to_layer` (exact IDs); `transform_shapes`, `arrange_shapes`, multi-ID `delete_shapes`; `combine_shapes` deadline; fix or remove broken `import_svg`/`import_image` | completed: success |
-| 11 | E19+E12 | Catalog diet and feedback quality: drop or share the repeated `ToolResult` output schema (~8.7k tokens), English descriptions, structured units, no silent `except: pass`, token-budget check in the acceptance suite | in progress |
-| 12 | E14 | Text: `inspect_text` / `edit_text` (content, style, run fills, overflow, fonts); `convert_to_curves` over IDs | backlog |
+| 11 | E19+E12 | Catalog diet and feedback quality: drop or share the repeated `ToolResult` output schema (~8.7k tokens), English descriptions, structured units, no silent `except: pass`, token-budget check in the acceptance suite | completed: success |
+| 12 | E14 | Text: `inspect_text` / `edit_text` (content, style, run fills, overflow, fonts); `convert_to_curves` over IDs | in progress |
 | 13 | E09 | `export_document` (formats, pages, layers, IDs) replacing 8 export tools | backlog |
 | 14 | E16 | Domain tools (templates, engineering, data merge, barcode, `check_dimensions`): keep / opt-in module / remove | backlog |
 | 15 | E15 | Read-only CQL `evaluate` escape hatch (may fold into `find_shapes`) | dropped: covered by `find_shapes(cql=…)` in E04+E11 |
@@ -57,6 +58,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 - E04: native `FindShapes` treats Name as an exact filter and skips PowerClips (not used). CQL refuses method calls, so `cql` is read-only.
 - E13b: ~100 outlined specks per `offset_silhouette` call; effect groups refused.
 - E07: moves to another page refused; group/move-to-layer accept top-level shapes only; `import_file` tested with SVG and PNG only.
+- E19: failures still return MCP `isError: false` (structured `success: false`); consider `isError: true` with structured data.
 - E08: edits activate their target document (Undo hazard); `test_e2e.py` updated but not run.
 
 ### From E00
