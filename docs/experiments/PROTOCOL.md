@@ -14,6 +14,7 @@ Simplify where it makes sense. Merge narrow tools into fewer, more flexible ones
 - Work only on your own fresh copies in `C:\CorelMcpLab\runs\<exp-id>\`. Copy them from `C:\CorelMcpLab\templates\` and `C:\CorelMcpLab\samples\` when you start. Never edit the master copies.
 - CorelDRAW is shared and may have other documents open, including a live customer document. Never close, save, or modify a document you did not open from your run folder. Before any mutating call, confirm that the target document's `FullFileName` is under your run folder. Close only your own documents (match by path), and set `Dirty = False` first.
 - Reset `app.Optimization`, `EventsEnabled`, and similar settings in `finally`.
+- **Shared-instance gate (added after E13 crashed CorelDRAW twice, once with a live customer document open).** Before starting CorelDRAW work, and before every in-process probe session, list the open documents. If any document is open that is not under `C:\CorelMcpLab` (for example anything on `Z:`, or another user's file), do not run probes or mutations: stop and report to the orchestrator. Prefer MCP calls over ad-hoc in-process probes, and avoid untested in-memory geometry APIs (`Curve.WeldWith` crashed `VGCore.dll`). Never relaunch or close CorelDRAW yourself after a crash; report it.
 - Only one CorelDRAW COM client may run at a time. Run one MCP server or in-process script at a time. Stop your server before you report.
 
 ## Environment
