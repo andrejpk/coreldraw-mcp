@@ -22,7 +22,7 @@ def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResu
             view.SimulateOverprints = enabled
         return {"document_path": actual_path, "simulate_overprints": bool(view.SimulateOverprints)}
 
-    result = conn.safe_call(read_view, max_attempts=1 if enabled is not None else None)
+    result = conn.safe_call(read_view)
     if not result["success"]:
         return ToolResult.fail(result["error"])
     data = result["result"]
@@ -151,7 +151,7 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str)
             "bytes": size, "proof_source": "CorelDRAW Publish to PDF",
         }
 
-    result = conn.safe_call(publish, max_attempts=1)
+    result = conn.safe_call(publish)
     if result["success"]:
         return ToolResult.ok(**result["result"])
     return ToolResult.fail(result["error"])
