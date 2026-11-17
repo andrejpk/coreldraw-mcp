@@ -38,7 +38,7 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
 ## 已知的代码重复与特殊处理
 
 - `_find_shape()` 在 `shapes.py`、`colors.py`、`layers.py` 三处重复（各有细微差异，尚未统一）
-- `check_rgb_colors` 在两个文件存在：`colors.py` 用于交互式检查，`preflight.py` 用于批量质检。Agent runner 里做了去重。
+- 颜色、油墨与印版检查统一用 `get_ink_inventory`（`tools/inks.py`）。旧的 `get_color_report` 和两份 `check_rgb_colors` 已在 E03 删除，Agent runner 的工具去重也随之移除。
 - PNG 导出有两套 API：`ExportBitmap`（主方案）和 `Export`（fallback），因不同 CorelDRAW 版本行为不一
 - Pantone 填充的 `FindPantone` 方法在不同 CorelDRAW 版本路径不同，用了 try/except 双方案
 

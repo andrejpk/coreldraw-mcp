@@ -1,7 +1,7 @@
 """颜色与填充工具 — CMYK/RGB/Pantone 填充、描边、颜色检查"""
 
 from core.connection import get_connection
-from core.drawing import CDR_COLOR_RGB, CDR_GROUP_SHAPE
+from core.drawing import CDR_GROUP_SHAPE
 from core.models import ToolResult
 from core.targets import call_on_active
 from tools.inspection import _CDR_NO_FILL, _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shapes
@@ -268,58 +268,6 @@ def set_no_outline(document_path: str, shape_id: str = "") -> ToolResult:
     return ToolResult.fail(result.get("error", "移除描边失败"))
 
 
-def check_rgb_colors(document_path: str = "") -> ToolResult:
-    """检测文档中的 RGB 颜色（印前检查用，印刷需转 CMYK）。
-
-    Reads the active document.
-    """
-    conn = get_connection()
-
-    def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        rgb_items = []
-        try:
-            for s in page.Shapes:
-                try:
-                    fill_type = s.Fill.Type
-                    if fill_type == 1:  # cdrUniformFill
-                        try:
-                            color = s.Fill.UniformColor
-                            if color.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name,
-                                    "type": "fill",
-                                    "color": f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}",
-                                })
-                        except Exception:
-                            pass
-                    if s.Outline.Type in (1, 2):
-                        try:
-                            color = s.Outline.Color
-                            if color.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name,
-                                    "type": "outline",
-                                    "color": f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}",
-                                })
-                        except Exception:
-                            pass
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return {"found": len(rgb_items), "items": rgb_items, "passed": len(rgb_items) == 0}
-
-    result = call_on_active(conn, document_path, _check, read_only=True)
-    if result["success"]:
-        r = result["result"]
-        if r["passed"]:
-            return ToolResult.ok("未发现 RGB 颜色，可安全印刷", **r)
-        return ToolResult.ok(f"发现 {r['found']} 处 RGB 颜色，建议转为 CMYK", **r)
-    return ToolResult.fail(result.get("error", "RGB 检查失败"))
 
 
 def set_fountain_fill(

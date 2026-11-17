@@ -1,7 +1,7 @@
 """印前质检工具 — 尺寸校验、文字溢出、缺失字体、色彩报告"""
 
 from core.connection import get_connection
-from core.drawing import CDR_COLOR_CMYK, CDR_COLOR_PANTONE, CDR_COLOR_RGB, CDR_TEXT_SHAPE
+from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
 from core.targets import call_on_active
 from core.units import MILLIMETER, convert
@@ -184,111 +184,4 @@ def check_missing_fonts(document_path: str = "") -> ToolResult:
     return ToolResult.fail(result.get("error", "字体检查失败"))
 
 
-def check_rgb_colors(document_path: str = "") -> ToolResult:
-    """检查文档中的 RGB 颜色（印前检查 — 印刷需转为 CMYK）。
 
-    Reads the active document.
-    """
-    conn = get_connection()
-
-    def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        rgb_items = []
-        try:
-            for s in page.Shapes:
-                try:
-                    fill = s.Fill
-                    if fill.Type == 1:  # cdrUniformFill
-                        try:
-                            if fill.UniformColor.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name or s.StaticID,
-                                    "type": "fill",
-                                    "color": "RGB",
-                                })
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-                try:
-                    outline = s.Outline
-                    if outline.Type in (1, 2):
-                        try:
-                            if outline.Color.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name or s.StaticID,
-                                    "type": "outline",
-                                    "color": "RGB",
-                                })
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return {"passed": len(rgb_items) == 0, "rgb_items": rgb_items, "count": len(rgb_items)}
-
-    result = call_on_active(conn, document_path, _check, read_only=True)
-    if result["success"]:
-        r = result["result"]
-        if r["passed"]:
-            return ToolResult.ok("未发现 RGB 颜色，可安全印刷", **r)
-        return ToolResult.ok(f"发现 {r['count']} 处 RGB 颜色", **r)
-    return ToolResult.fail(result.get("error", "RGB 检查失败"))
-
-
-def get_color_report(document_path: str = "") -> ToolResult:
-    """生成当前页顶层形状的纯色填充报告（CMYK、RGB、Pantone）。
-
-    Reads the active document.
-    """
-    conn = get_connection()
-
-    def _report():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        rgb_colors = set()
-        cmyk_colors = set()
-        pantone_colors = set()
-        total_shapes = 0
-        try:
-            for s in page.Shapes:
-                total_shapes += 1
-                try:
-                    fill = s.Fill
-                    if fill.Type == 1:
-                        color = fill.UniformColor
-                        if color.Type == CDR_COLOR_RGB:
-                            rgb_colors.add(f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}")
-                        elif color.Type == CDR_COLOR_CMYK:
-                            c, m, y, k = color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack
-                            cmyk_colors.add(f"C{c:.0f} M{m:.0f} Y{y:.0f} K{k:.0f}")
-                        elif color.Type == CDR_COLOR_PANTONE:
-                            try:
-                                pantone_colors.add(color.Name)
-                            except Exception:
-                                pantone_colors.add(f"Pantone_{s.StaticID}")
-                except Exception:
-                    pass
-        except Exception:
-            pass
-        return {
-            "total_shapes": total_shapes,
-            "cmyk_colors": sorted(list(cmyk_colors)),
-            "rgb_colors": sorted(list(rgb_colors)),
-            "pantone_colors": sorted(list(pantone_colors)),
-            "has_rgb": len(rgb_colors) > 0,
-            "passed": len(rgb_colors) == 0,
-        }
-
-    result = call_on_active(conn, document_path, _report, read_only=True)
-    if result["success"]:
-        r = result["result"]
-        return ToolResult.ok(f"色彩报告: {r['total_shapes']}个形状, CMYK={len(r['cmyk_colors'])}, "
-                             f"RGB={len(r['rgb_colors'])}, Pantone={len(r['pantone_colors'])}", **r)
-    return ToolResult.fail(result.get("error", "获取色彩报告失败"))

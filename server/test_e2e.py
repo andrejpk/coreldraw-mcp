@@ -57,7 +57,8 @@ from tools.shapes import (
     group_shapes,
 )
 from tools.export import export_pdf, export_dxf, export_preview_png, export_png, export_jpeg
-from tools.preflight import check_dimensions, check_rgb_colors, check_text_overflow_all, get_color_report
+from tools.preflight import check_dimensions, check_text_overflow_all
+from tools.inks import get_ink_inventory
 from tools.colors import (
     set_fill_cmyk,
     set_fill_rgb,
@@ -206,8 +207,8 @@ def test_step6_preflight(tr: TestResult):
     result1 = check_dimensions(200, 80, 0.5)
     tr.step("尺寸检查 (200×80 ±0.5mm)", result1)
 
-    result2 = check_rgb_colors()
-    tr.step("RGB 颜色检查", result2)
+    result2 = get_ink_inventory(DOC.path)
+    tr.step("油墨/印版清单 (RGB 与工艺色来源)", result2)
 
     result3 = convert_text_to_curves(DOC.path, "placeholder_room")
     tr.step("placeholder_room 转曲", result3)
@@ -438,8 +439,8 @@ def test_step10_advanced_p1(tr: TestResult):
     result = check_text_overflow_all()
     tr.step("全文档文字溢出检查", result)
 
-    result = get_color_report()
-    tr.step("色彩报告", result)
+    result = get_ink_inventory(DOC.path, pages=[1], printable_only=True)
+    tr.step("油墨清单", result)
 
     # 测试 PowerClip（用两个矩形）
     clip_container = create_rectangle(DOC.path, 60, 80, 30, 15, 5)

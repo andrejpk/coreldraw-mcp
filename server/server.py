@@ -61,6 +61,7 @@ def register_tools():
         engineering,
         export,
         geometry,
+        inks,
         inspection,
         layers,
         preflight,
@@ -101,6 +102,7 @@ def register_tools():
     mcp.add_tool(shapes.select_shapes)
     mcp.add_tool(shapes.powerclip)
     mcp.add_tool(inspection.inspect_shapes)
+    mcp.add_tool(Tool.from_function(inks.get_ink_inventory, annotations={"readOnlyHint": True}))
     mcp.add_tool(inspection.get_ui_selection)
     mcp.add_tool(inspection.select_shapes_by_id)
     mcp.add_tool(effects.inspect_contours)
@@ -137,7 +139,6 @@ def register_tools():
     mcp.add_tool(colors.set_outline)
     mcp.add_tool(colors.set_no_fill)
     mcp.add_tool(colors.set_no_outline)
-    mcp.add_tool(colors.check_rgb_colors)
     mcp.add_tool(colors.set_fountain_fill)
     mcp.add_tool(colors.set_transparency)
 
@@ -161,7 +162,6 @@ def register_tools():
     mcp.add_tool(preflight.check_dimensions)
     mcp.add_tool(preflight.check_text_overflow_all)
     mcp.add_tool(preflight.check_missing_fonts)
-    mcp.add_tool(preflight.get_color_report)
 
     mcp.add_tool(templates.list_templates)
     mcp.add_tool(templates.get_template_info)

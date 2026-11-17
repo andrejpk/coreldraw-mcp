@@ -171,10 +171,8 @@ def verify(template):
         r = tool("list_all_text_shapes", page_index=1, document_path=path)
         res["list_all_text_shapes"] = r.get("count", len(r.get("shapes", r.get("text_shapes", [])) or []))
     if template["file"] in ("colors.cdr", "screen_job.cdr"):
-        r = tool("get_color_report", document_path=path)
-        res["get_color_report"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
-        r = tool("check_rgb_colors", document_path=path)
-        res["check_rgb_colors"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
+        r = tool("get_ink_inventory", document_path=path)
+        res["get_ink_inventory"] = {k: v for k, v in r.items() if k not in ("_seconds",)} if r.get("success") else r
     if template["file"] == "screen_job.cdr":
         r = tool("get_print_separation_settings", document_path=path)
         res["separation_settings"] = r

@@ -1,4 +1,5 @@
-r"""Acceptance tests through the running MCP server: E08 document management, then the 2026-11-17 production follow-up.
+r"""Acceptance tests through the running MCP server: E08 document management, the 2026-11-17 production
+follow-up, the E17a structure cache and the E03 ink inventory.
 
 Usage (from server/): python accept_mcp.py <dir> '<ids json from build_accept.py>'
 <dir>\fx must hold accept.cdr (build_accept.py). The document section copies C:\CorelMcpLab\templates\colors.cdr
@@ -467,6 +468,153 @@ check("status: reports the running tool, its time and that it is read-only",
 check("status: the full big_flat inventory finishes in one call", holder["r"]["success"]
       and len(holder["r"]["data"]["shapes"]) == 4000 and holder["r"]["data"]["next_offset"] is None)
 for target in (ST, BIG):
+    r = call("close_document", document_path=target, discard_changes=True)
+    check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
+
+# 5. Ink inventory, PowerClip contents and effect links (E03) ----------------------------------------
+import asyncio
+import subprocess
+from fastmcp import Client
+INKS, ST3, EF3 = FX + r"\inks.cdr", FX + r"\e03_structure.cdr", FX + r"\e03_effects.cdr"
+for leftover in Path(FX).glob("e03_*.pdf"):
+    leftover.unlink()
+Path(INKS).unlink(missing_ok=True)
+built = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "e03" / "build_inks.py"), FX],
+                       capture_output=True, text=True, check=False)
+check("inks: fixture built", built.returncode == 0 and Path(INKS).is_file(), built.stdout[-300:] + built.stderr[-300:])
+for source, target in (("structure.cdr", ST3), ("effects.cdr", EF3)):
+    shutil.copyfile(TEMPLATES / source, target)
+for target in (INKS, ST3, EF3):
+    r = call("open_document", path=target, activate=False)
+    check(f"inks setup: open {Path(target).name}", r["success"], r.get("error"))
+
+
+def names(path, page):
+    r = call("inspect_shapes", document_path=path, page_index=page, fields=["name", "type"])
+    assert r["success"], r
+    return {s["name"]: s for s in r["data"]["shapes"] if s.get("name")}, r["data"]["shapes"]
+
+
+def ink(page, name):
+    return next((i for i in page["inks"] if i["ink"] == name), None)
+
+
+def warning(page, code):
+    return next((w for w in page["warnings"] if w["code"] == code), None)
+
+
+r = call("get_ink_inventory", document_path=INKS, max_ids_per_ink=10)
+check("inks: whole fixture in one call under 3 s", r["success"] and r["_seconds"] < 3 and r["data"]["next_pages"] is None
+      and len(r["data"]["pages"]) == 3, (r.get("error"), r.get("_seconds")))
+p1, p2, p3 = r["data"]["pages"]
+n1, _ = names(INKS, 1)
+check("inks p1: PDF-proof plates", p1["plates"]["pdf_proof"] == ["PANTONE 186 C", "PANTONE 300 C", "PANTONE 354 C",
+                                                                  "PANTONE Trans. White", "Cyan", "Magenta"],
+      p1["plates"])
+check("inks p1: hidden-but-printable layer adds 116 C to print only, with a warning",
+      p1["plates"]["hidden_printable_only"] == ["PANTONE 116 C"] and "PANTONE 116 C" in p1["plates"]["print"]
+      and warning(p1, "hidden_printable_ink")["ids"] == [n1["hidden_print_116"]["shape_id"]], p1["plates"])
+check("inks p1: off-page and clipped spots are blank plates", p1["plates"]["blank_spot_plates"]
+      == ["PANTONE 485 C", "PANTONE 7508 C"] and warning(p1, "ink_only_off_page")["inks"] == ["PANTONE 7508 C"])
+text_id = n1["text_mixed"]["shape_id"]
+runs = {name: [i for i in ink(p1, name)["ids"] if i["id"] == text_id][0]["parts"]
+        for name in ("PANTONE 186 C", "PANTONE 300 C", "PANTONE 116 C", "CMYK 100/0/0/0")}
+check("inks p1: every text run is reported (spot fill, spot outline, whitespace-only spot, CMYK fill)",
+      runs == {"PANTONE 186 C": ["text_fill"], "PANTONE 300 C": ["text_outline"], "PANTONE 116 C": ["text_whitespace"],
+               "CMYK 100/0/0/0": ["text_fill"]} and warning(p1, "ink_on_whitespace_text"), runs)
+magenta = ink(p1, "CMYK 0/100/0/0")["ids"][0]
+check("inks p1: contour-generated process ink links to its effect group and control shape",
+      magenta["state"] == "prints" and magenta["effect_control_id"] == n1["contour_control"]["shape_id"]
+      and "effect_group_id" in magenta, magenta)
+white = ink(p1, "PANTONE Trans. White")["ids"][0]
+clipped = ink(p1, "PANTONE 485 C")["ids"][0]
+check("inks p1: PowerClip contents carry their container; content outside it is clipped",
+      white["powerclip_container_id"] == n1["clip_container"]["shape_id"] == clipped["powerclip_container_id"]
+      and white["state"] == "prints" and clipped["state"] == "clipped", (white, clipped))
+check("inks p1: a hidden object does not print its ink", ink(p1, "CMYK 0/0/100/0")["objects"] == {"hidden_object": 1}
+      and "Yellow" not in p1["plates"]["print"] and warning(p1, "hidden_object_with_ink"))
+check("inks p1: locked layer, master layer, non-printing layer and transparency are flagged",
+      ink(p1, "PANTONE 354 C")["flags"] == {"locked_layer": 1} and ink(p1, "PANTONE 300 C")["flags"]["master_layer"] == 1
+      and ink(p1, "RGB 255/0/0")["objects"] == {"non_printable_layer": 1}
+      and ink(p1, "PANTONE 186 C")["flags"] == {"transparent": 1} and warning(p1, "transparency_with_ink"))
+check("inks p1: fountain stops and a fountain between two spots",
+      ink(p1, "PANTONE 186 C")["parts"]["fountain_stop"] == 3 and ink(p1, "PANTONE 186 C")["tints"] == [100, 20]
+      and warning(p1, "fountain_mixes_inks")["ids"] == [n1["fountain_spot_spot"]["shape_id"]])
+modes = sorted(b["mode"] for b in p2["bitmaps"])
+check("inks p2: bitmap color modes, process warning, registration on every plate", modes == ["RGB", "grayscale"]
+      and warning(p2, "bitmap_process")["count"] == 1 and ink(p2, "Registration")["objects"] == {"prints": 1}
+      and p2["plates"]["pdf_proof"] == ["PANTONE 300 C", "Cyan", "Magenta", "Yellow", "Black"], p2["plates"])
+close = warning(p3, "similar_spot_colors")
+check("inks p3: similar spots flagged with a color distance", close and close["inks"][0]["inks"]
+      == ["PANTONE 354 C", "PANTONE 355 C"] and ink(p3, "PANTONE 300 C")["flags"] == {"master_layer": 1}, close)
+for page in (1, 2, 3):
+    pdf = FX + rf"\e03_inks_p{page}.pdf"
+    out = call("export_page_proof_pdf", document_path=INKS, page_index=page, output_path=pdf)
+    predicted = r["data"]["pages"][page - 1]["plates"]["pdf_proof"]
+    check(f"inks p{page}: predicted plates equal the Ghostscript render", out["success"]
+          and inked_plates(pdf) == sorted(predicted), (predicted, out.get("error")))
+q = call("get_ink_inventory", document_path=INKS, pages=[1], printable_only=True, max_ids_per_ink=0)
+check("inks: printable_only drops inks that print nothing; max_ids 0 omits IDs",
+      q["success"] and {i["ink"] for i in q["data"]["pages"][0]["inks"]}.isdisjoint(
+          {"PANTONE 485 C", "PANTONE 7508 C", "CMYK 0/0/100/0", "RGB 255/0/0"})
+      and all(not i.get("ids") for i in q["data"]["pages"][0]["inks"]), q.get("error"))
+for args, label in (({"pages": [4]}, "page out of range"), ({"max_ids_per_ink": 51}, "max_ids_per_ink out of range")):
+    q = call("get_ink_inventory", document_path=INKS, **args)
+    check(f"inks: {label} refused", not q["success"], q.get("error"))
+named, shapes = names(ST3, 1)
+contents = [s for s in shapes if s.get("in_powerclip")]
+check("inspect_shapes: descends into PowerClip contents (7 on structure.cdr) with container IDs",
+      len(contents) == 7 and named["clip_rect"]["powerclip_container_id"] == named["clip_container"]["shape_id"]
+      and named["clip_rect"]["parent_id"] == named["clip_container"]["shape_id"]
+      and named["clip_nested_content"]["powerclip_container_id"] == named["clip_inner"]["shape_id"]
+      and named["clip_grp_a"]["parent_id"] == named["clip_group"]["shape_id"], len(contents))
+paged = mcp_inventory(ST3, limit=3)
+structure_cache.invalidate()
+check("inspect_shapes: paged PowerClip inventory equals a fresh walk", paged == truth(ST3), len(paged))
+
+
+def drop_clip_content(doc, layers, named_shapes):
+    container = [s for s in layers["PowerClip"].Shapes if s.Name == "clip_container"][0]
+    victim = [s for s in container.PowerClip.Shapes if s.Name == "clip_rect"][0]
+    shape_id = str(victim.StaticID)
+    victim.Delete()
+    return shape_id
+
+
+def edit_st3(func):
+    def run():
+        doc = doc_of(ST3)
+        layers = {layer.Name: layer for layer in doc.Pages(1).AllLayers}
+        return func(doc, layers, None)
+    return direct(run)
+
+
+gone = edit_st3(drop_clip_content)
+after = mcp_inventory(ST3, limit=3)
+check("cache, out-of-band: a deleted PowerClip content disappears", gone not in ids(after) and after == truth(ST3), gone)
+named, shapes = names(EF3, 1)
+groups = {s["shape_id"]: s for s in call("inspect_shapes", document_path=EF3, page_index=1)["data"]["shapes"]}
+by_id = {v["shape_id"]: k for k, v in named.items()}
+links = sorted(by_id.get(s["effect_control_id"]) for s in groups.values() if "effect_control_id" in s)
+generated = [s for s in groups.values() if s.get("effect_group_id")]
+check("inspect_shapes: contour and shadow groups name their control shape; generated objects their group",
+      links == ["contour_control", "contour_inside_control", "shadow_source"] and len(generated) == 4
+      and all(groups[s["effect_group_id"]]["type"] in (13, 16) for s in generated), links)
+
+
+async def _tools():
+    async with Client("http://127.0.0.1:8765/mcp") as client:
+        return await client.list_tools()
+
+
+listed = {tool.name for tool in asyncio.run(_tools())}
+check("catalog: get_color_report and check_rgb_colors removed, get_ink_inventory added",
+      "get_ink_inventory" in listed and not {"get_color_report", "check_rgb_colors"} & listed)
+r = call("get_print_separation_settings", document_path=INKS)
+check("separation settings: real settings only, no color-set plate list",
+      r["success"] and "available_plates" not in r["data"] and r["data"]["disabled_plates"] == []
+      and isinstance(r["data"]["separations_enabled"], bool), r.get("error") or r.get("data"))
+for target in (INKS, ST3, EF3):
     r = call("close_document", document_path=target, discard_changes=True)
     check(f"cleanup: close {Path(target).name}", r["success"], r.get("error"))
 

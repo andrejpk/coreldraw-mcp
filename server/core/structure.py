@@ -25,10 +25,13 @@ Cache API (used by ``inspect_shapes``, the exact-ID tools and ``list_all_text_sh
 ``LayerStructure``
     ``entries``: ``Entry(path, parent, shape_id, parent_id, type)`` in the order of
     ``core.drawing.walk_shapes`` (stacking order, each group followed by its descendants). ``path`` is the
-    tuple of one-based ``Shapes.Item`` indices from the layer and ``parent`` is the parent's path (None at the
-    top level). IDs are strings. ``position`` maps a shape ID to its index in ``entries``; ``groups`` lists
-    ``(path, shape_id, child_count)``. PowerClip contents and the inside of effect groups (contours, shadows)
-    are not walked.
+    tuple of one-based ``Shapes.Item`` indices from the layer (a negative index ``-k`` is
+    ``PowerClip.Shapes.Item(k)``, a PowerClip content) and ``parent`` is the parent's path (None at the top
+    level). IDs are strings. ``clip`` is the StaticID of the innermost PowerClip container that holds the shape
+    (None outside PowerClips); ``effect`` is the StaticID of the effect group (contour, drop shadow, blend,
+    extrude, bevel...) whose generated objects include the shape. ``position`` maps a shape ID to its index in
+    ``entries``; ``groups`` lists ``(path, shape_id, child_count, powerclip_count)`` for every shape with
+    children. Groups, effect groups and PowerClip contents are all walked.
 ``read_entries(view, entries, expressions) -> list[tuple]``
     One batched CQL read for many entries of one layer. ``expressions`` use ``$item`` for the shape, for
     example ``["$item.Fill.Type", "$item.Outline.Width"]``. Returns one tuple per entry, in order, after
@@ -80,9 +83,17 @@ _NEXT = ".Next(0, false, false)"  # the next sibling in the same parent; null af
 _MAX_BLOCK_POWER = 8  # blocks of up to 256 siblings: ~m/2 Next steps per shape, one Item resolution per block
 _MAX_ITEMS_PER_QUERY = 4096  # shapes per Shape.Evaluate call (each call stays well under a second)
 _MAX_PAGES = 16
-_WALK_LEAF = f"array($item.StaticID, $item.Type, iif($item.Type = {CDR_GROUP_SHAPE}, $item.Shapes.Count, 0))"
-_GROUP_LEAF = f"iif($item.Type = {CDR_GROUP_SHAPE}, array($item.StaticID, $item.Shapes.Count), 0)"
-_LAYER_LEAF = "array($item.Name, $item.Shapes.Count, $item.Master, $item.Visible, $item.Printable)"
+#: Effect groups: their ``Shapes`` are the objects CorelDRAW generated for the effect (blend 10, extrude 11,
+#: contour 13, bevel 15, drop shadow 16, artistic media 18, custom effect 22).
+EFFECT_GROUP_TYPES = frozenset({10, 11, 13, 15, 16, 18, 22})
+#: Shape types whose ``Shapes`` hold children (groups and effect groups). They have no fill or outline of their own.
+CONTAINER_TYPES = EFFECT_GROUP_TYPES | {CDR_GROUP_SHAPE}
+_HAS_CHILDREN = " or ".join(f"$item.Type = {kind}" for kind in sorted(CONTAINER_TYPES))
+_CHILD_COUNT = f"iif({_HAS_CHILDREN}, $item.Shapes.Count, 0)"
+_CLIP_COUNT = "iif($item.PowerClip.Shapes.Count > 0, $item.PowerClip.Shapes.Count, 0)"  # null without a PowerClip
+_WALK_LEAF = f"array($item.StaticID, $item.Type, {_CHILD_COUNT}, {_CLIP_COUNT})"
+_GROUP_LEAF = f"array($item.StaticID, {_CHILD_COUNT}, {_CLIP_COUNT})"
+_LAYER_LEAF = "array($item.Name, $item.Shapes.Count, $item.Master, $item.Visible, $item.Printable, $item.Editable)"
 
 
 class StaleStructureError(RuntimeError):
@@ -95,12 +106,14 @@ class Entry(NamedTuple):
     shape_id: str
     parent_id: str | None
     type: int
+    clip: str | None = None  # innermost PowerClip container holding this shape
+    effect: str | None = None  # effect group whose generated objects include this shape
 
 
 @dataclass
 class LayerStructure:
     entries: list[Entry]
-    groups: list[tuple[tuple, str, int]]  # (path, shape ID, child count)
+    groups: list[tuple[tuple, str, int, int]]  # (path, shape ID, child count, PowerClip content count)
     position: dict[str, int] = field(default_factory=dict)
     duplicates: set[str] = field(default_factory=set)
 
@@ -122,6 +135,7 @@ class LayerView:
     printable: bool
     structure: LayerStructure
     _layer: object = None
+    editable: bool = True
 
     @property
     def layer(self):
@@ -131,7 +145,7 @@ class LayerView:
 
     def details(self) -> dict:
         return {"name": self.name, "master": bool(self.master), "visible": bool(self.visible),
-                "printable": bool(self.printable)}
+                "printable": bool(self.printable), "locked": not self.editable}
 
 
 @dataclass
@@ -165,10 +179,17 @@ def invalidate(document_path: str | None = None) -> None:
 
 # --- CQL helpers ---------------------------------------------------------------------------------------------
 
+def _step(index) -> str:
+    return f"PowerClip.Shapes.Item({-index})" if index < 0 else f"Shapes.Item({index})"
+
+
 def query_path(path, ordinal: int | None = None) -> str:
-    """CQL for the shape at an index path: from a page anchor on layer ``ordinal``, else from a shape on the layer."""
-    start = "@com.Layer.Shapes." if ordinal is None else f"@com.Page.AllLayers.Item({ordinal}).Shapes."
-    return start + ".Shapes.".join(f"Item({index})" for index in path)
+    """CQL for the shape at an index path: from a page anchor on layer ``ordinal``, else from a shape on the layer.
+
+    A negative index ``-k`` steps into PowerClip contents (``PowerClip.Shapes.Item(k)``).
+    """
+    start = "@com.Layer." if ordinal is None else f"@com.Page.AllLayers.Item({ordinal})."
+    return start + ".".join(_step(index) for index in path)
 
 
 def evaluate(anchor, expressions):
@@ -205,8 +226,11 @@ def _blocks(first, count):
 
 
 def _read_runs(anchor, runs, leaf):
-    """Apply ``leaf`` to runs of consecutive siblings [(ordinal, parent_path, first_index, count)], in order."""
-    blocks = [(ordinal, parent, start, power) for ordinal, parent, first, count in runs
+    """Apply ``leaf`` to runs of consecutive siblings [(ordinal, parent_path, first_index, count, clip)], in order.
+
+    ``clip`` marks a run of PowerClip contents (path index ``-k``).
+    """
+    blocks = [(ordinal, parent, -start if clip else start, power) for ordinal, parent, first, count, clip in runs
               for start, power in _blocks(first, count)]
     values, batch, size = [], [], 0
 
@@ -229,14 +253,13 @@ def _read_runs(anchor, runs, leaf):
 
 
 def _runs(paths):
-    """Group index paths into runs of consecutive siblings: [(parent, first, count)]."""
+    """Group index paths into runs of consecutive siblings: [(parent, first, count, clip)]."""
     runs = []
-    for path in sorted(paths):
-        parent, index = path[:-1], path[-1]
-        if runs and runs[-1][0] == parent and runs[-1][1] + runs[-1][2] == index:
+    for parent, clip, index in sorted((path[:-1], path[-1] < 0, abs(path[-1])) for path in paths):
+        if runs and runs[-1][0] == parent and runs[-1][3] == clip and runs[-1][1] + runs[-1][2] == index:
             runs[-1][2] += 1
         else:
-            runs.append([parent, index, 1])
+            runs.append([parent, index, 1, clip])
     return [tuple(run) for run in runs]
 
 
@@ -248,33 +271,42 @@ def _walk(anchor, tops):
     An ordinal of None means the anchor's own layer.
     """
     _stats["walks"] += 1
-    children = {}
-    pending = [(ordinal, (), count) for ordinal, count in tops if count]
+    children = {}  # (ordinal, parent path) -> [(path index, StaticID, type, child count, PowerClip count)]
+    pending = [(ordinal, (), count, False) for ordinal, count in tops if count]
     while pending:
-        values = _read_runs(anchor, [(ordinal, parent, 1, count) for ordinal, parent, count in pending], _WALK_LEAF)
+        values = _read_runs(anchor, [(ordinal, parent, 1, count, clip) for ordinal, parent, count, clip in pending],
+                            _WALK_LEAF)
         position, following = 0, []
-        for ordinal, parent, count in pending:
+        for ordinal, parent, count, clip in pending:
             kids = values[position:position + count]
             position += count
-            children[ordinal, parent] = kids
-            following += [(ordinal, (*parent, index), size) for index, (_, kind, size) in enumerate(kids, 1)
-                          if kind == CDR_GROUP_SHAPE and size]
+            for index, (static_id, kind, size, clips) in enumerate(kids, 1):
+                path_index = -index if clip else index
+                children.setdefault((ordinal, parent), []).append((path_index, static_id, kind, size or 0, clips or 0))
+                if size:
+                    following.append((ordinal, (*parent, path_index), size, False))
+                if clips:
+                    following.append((ordinal, (*parent, path_index), clips, True))
         pending = following
 
     structures = {}
     for ordinal, _ in tops:
         entries, groups = [], []
 
-        def visit(parent, parent_id, ordinal=ordinal, entries=entries, groups=groups):
-            for index, (static_id, kind, size) in enumerate(children.get((ordinal, parent), ()), 1):
+        def visit(parent, parent_id, clip_id, effect_id, ordinal=ordinal, entries=entries, groups=groups):
+            # Each shape is followed by its children, then by its PowerClip contents.
+            kids = sorted(children.get((ordinal, parent), ()), key=lambda kid: (kid[0] < 0, abs(kid[0])))
+            for index, static_id, kind, size, clips in kids:
                 path, shape_id = (*parent, index), str(static_id)
-                entries.append(Entry(path, parent or None, shape_id, parent_id, kind))
-                if kind == CDR_GROUP_SHAPE:
-                    groups.append((path, shape_id, size))
-                    if size:
-                        visit(path, shape_id)
+                entries.append(Entry(path, parent or None, shape_id, parent_id, kind, clip_id, effect_id))
+                if size or clips:
+                    groups.append((path, shape_id, size, clips))
+                if size:
+                    visit(path, shape_id, clip_id, shape_id if kind in EFFECT_GROUP_TYPES else effect_id)
+                if clips:
+                    visit(path, shape_id, shape_id, effect_id)
 
-        visit((), None)
+        visit((), None, None, None)
         structures[ordinal] = LayerStructure(entries, groups)
     return structures
 
@@ -282,7 +314,7 @@ def _walk(anchor, tops):
 def layer_view(layer, structure: LayerStructure | None = None) -> LayerView:
     """A view of one COM layer (paths relative to its first shape) for reading entries without a page walk."""
     return LayerView(layer.Page, layer.Shapes.Item(1), None, layer.Name, layer.Master, layer.Visible,
-                     layer.Printable, structure, layer)
+                     layer.Printable, structure, layer, layer.Editable)
 
 
 def walk_layer(layer) -> LayerStructure:
@@ -297,7 +329,7 @@ def walk_layer(layer) -> LayerStructure:
 class _PageState(NamedTuple):
     shapes: object  # page.Shapes (COM)
     anchor: object  # a shape on one of the page's own layers, or None
-    layers: list  # [(name, top-level count, master, visible, printable)] in AllLayers order
+    layers: list  # [(name, top-level count, master, visible, printable, editable)] in AllLayers order
 
 
 def _local_anchor(shapes):
@@ -325,14 +357,15 @@ def _page_state(page) -> _PageState:
         rows = anchor.Evaluate(f"array({items}).convert({_LAYER_LEAF})")
         return _PageState(shapes, anchor, [tuple(row) for row in rows])
     # Nothing on the page's own layers: read the layer list directly (master layers may still have shapes).
-    layers = [(layer.Name, layer.Shapes.Count, layer.Master, layer.Visible, layer.Printable) for layer in page.AllLayers]
+    layers = [(layer.Name, layer.Shapes.Count, layer.Master, layer.Visible, layer.Printable, layer.Editable)
+              for layer in page.AllLayers]
     return _PageState(shapes, None, layers)
 
 
 def _master_only_views(page, state, layer_name):
     """Views for a page whose shapes are all on master layers: walked layer by layer, not cached."""
     views = []
-    for ordinal, (name, count, master, visible, printable) in enumerate(state.layers, 1):
+    for ordinal, (name, count, master, visible, printable, editable) in enumerate(state.layers, 1):
         if layer_name is not None and name != layer_name:
             continue
         layer = page.AllLayers.Item(ordinal)
@@ -340,7 +373,8 @@ def _master_only_views(page, state, layer_name):
             views.append(layer_view(layer, walk_layer(layer)))
             views[-1].ordinal = None
         else:
-            views.append(LayerView(page, None, ordinal, name, master, visible, printable, LayerStructure([], []), layer))
+            views.append(LayerView(page, None, ordinal, name, master, visible, printable, LayerStructure([], []), layer,
+                                   editable))
     return views
 
 
@@ -357,6 +391,8 @@ def _still_valid(state, cached) -> bool:
         return False
     if _recursive_count(state) != cached.recursive_count or _newer_count(state, cached.max_id):
         return False
+    # Recursive counts (FindShapes with an empty name) see only unnamed shapes and no PowerClip contents, so the
+    # container check below is what catches nested edits among named shapes.
     groups = [(ordinal, group) for ordinal, structure in enumerate(cached.structures, 1) for group in structure.groups]
     if not groups:
         return True
@@ -364,11 +400,11 @@ def _still_valid(state, cached) -> bool:
         return False  # verifying many groups one path at a time costs about as much as a walk
     try:
         values = evaluate(state.anchor, [f"array({query_path(path, ordinal)}).convert({_GROUP_LEAF})"
-                                         for ordinal, (path, _, _) in groups])
+                                         for ordinal, (path, _, _, _) in groups])
     except Exception:
         return False  # a cached path no longer resolves
-    return all(value[0] and str(value[0][0]) == shape_id and value[0][1] == size
-               for value, (_, (_, shape_id, size)) in zip(values, groups, strict=True))
+    return all(value[0] and str(value[0][0]) == shape_id and value[0][1] == size and value[0][2] == clips
+               for value, (_, (_, shape_id, size, clips)) in zip(values, groups, strict=True))
 
 
 def page_layers(doc, page, layer_name: str | None = None, *, fresh: bool = False) -> list[LayerView]:
@@ -397,7 +433,7 @@ def page_layers(doc, page, layer_name: str | None = None, *, fresh: bool = False
                                      structures)
             while len(_cache) > _MAX_PAGES:
                 _cache.popitem(last=False)
-    return [LayerView(page, state.anchor, ordinal, row[0], row[2], row[3], row[4], structure)
+    return [LayerView(page, state.anchor, ordinal, row[0], row[2], row[3], row[4], structure, None, row[5])
             for ordinal, (row, structure) in enumerate(zip(state.layers, structures, strict=True), 1)
             if layer_name is None or row[0] == layer_name]
 
@@ -412,9 +448,9 @@ def read_entries(view: LayerView, entries, expressions) -> list[tuple]:
     runs = _runs([entry.path for entry in entries])
     values = _read_runs(view.anchor, [(view.ordinal, *run) for run in runs], leaf)
     by_path, position = {}, 0
-    for parent, first, count in runs:
+    for parent, first, count, clip in runs:
         for offset in range(count):
-            by_path[(*parent, first + offset)] = values[position]
+            by_path[(*parent, -(first + offset) if clip else first + offset)] = values[position]
             position += 1
     results = []
     for entry in entries:
@@ -430,7 +466,7 @@ def resolve_path(layer, path):
     """The COM shape at an index path (no verification)."""
     shape = layer.Shapes.Item(path[0])
     for index in path[1:]:
-        shape = shape.Shapes.Item(index)
+        shape = shape.PowerClip.Shapes.Item(-index) if index < 0 else shape.Shapes.Item(index)
     return shape
 
 

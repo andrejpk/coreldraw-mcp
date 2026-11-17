@@ -44,11 +44,12 @@ def set_simulate_overprints(document_path: str, enabled: bool) -> ToolResult:
 
 
 def get_print_separation_settings(document_path: str) -> ToolResult:
-    """Read an exact open document's print configuration and CorelDRAW's available separation plates.
+    """Read an exact open document's print and separation settings without printing.
 
-    Plate availability and enabled flags describe configuration for the print range. They
-    cannot establish which pages emit a non-empty plate, its image, or RIP output. This
-    tool reads current settings without submitting a print job.
+    Returns the printer, copies, print range, whether separations are on, spot_to_cmyk (spots
+    printed as process), print_empty_plates, preserve_overprints, and disabled_plates (plates
+    switched off in the print settings, which will not print). Which plates each page produces,
+    and the objects behind them, come from get_ink_inventory.
     """
     conn = get_connection()
 
@@ -63,7 +64,7 @@ def get_print_separation_settings(document_path: str) -> ToolResult:
             "separations_enabled": lambda: bool(separations.Enabled), "spot_to_cmyk": lambda: bool(separations.SpotToCMYK),
             "print_empty_plates": lambda: bool(separations.EmptyPlates),
             "preserve_overprints": lambda: bool(separations.PreserveOverprints),
-            "available_plates": lambda: _available_plates(separations),
+            "disabled_plates": lambda: _disabled_plates(separations),
         }
         return {"document_path": actual_path, **_read_fields(fields)}
 
@@ -85,18 +86,15 @@ def _read_fields(fields):
     return {**result, "unavailable": unavailable}
 
 
-def _available_plates(separations):
+def _disabled_plates(separations):
+    """Labels of the plates switched off for printing.
+
+    CorelDRAW's plate list is the color set's configuration: it lists inks that no page uses (for example
+    six Hexachrome plates), all enabled, so only the plates switched off are informative.
+    """
     plates = separations.Plates
-    configured = []
-    for index in range(1, plates.Count + 1):
-        plate = plates.Item(index)
-        fields = {
-            "plate_type": lambda: plate.Type, "enabled": lambda: bool(plate.Enabled),
-            "label": lambda: plate.Color, "angle": lambda: plate.Angle,
-            "frequency": lambda: plate.Frequency,
-        }
-        configured.append({"index": index, **_read_fields(fields)})
-    return configured
+    return [str(plate.Color) for plate in (plates.Item(index) for index in range(1, plates.Count + 1))
+            if not plate.Enabled]
 
 
 def _proof_destination(output_path):
