@@ -29,6 +29,7 @@ Simplify where it makes sense. Merge narrow tools into fewer, more flexible ones
 ## Conventions
 
 - Follow `CLAUDE.md`/`AGENTS.md`. Tools are bare functions registered in `server/server.py`, return `ToolResult`, and use their docstring as the tool description. No `noqa` and no lint suppression in server code.
+- Remove or replace tools you supersede; do not leave old and new versions side by side. Update `README.md` tool tables if they list the tools you change.
 - Prefer exact targeting (document path, page, StaticIDs) and verified read-back over trusting a COM call.
 - Mutating tools should be one undo step (`BeginCommandGroup`/`EndCommandGroup`), should verify their result, and should return enough state that the calling agent can confirm the change without another call.
 
@@ -37,6 +38,6 @@ Simplify where it makes sense. Merge narrow tools into fewer, more flexible ones
 1. `ruff check server/` must add no errors beyond the baseline of 31 errors on `claude/experiments-integration`. Compare against the baseline.
 2. `python server.py --check` passes.
 3. Keep the existing validation passing: `scripts/validation/build_accept.py` plus `accept_mcp.py` (37 checks; it renders layer proofs with Ghostscript at `C:\Program Files\gs\gs10.08.0\bin\gswin64c.exe`, and `server/render_separation_proof.py` renders per-plate PNGs plus a manifest) and `accept_failure.py`. Update them when you rename or merge tools, and add checks for new behavior. Run them against fixtures in your run folder.
-4. Measure before and after: timings, tool counts, round trips, or success on the real sample copies, as relevant.
+4. Measure before and after: timings, tool counts, round trips, or success on the real sample copies, as relevant. Always report the catalog size from `scripts/validation/catalog_size.py` (tools, chars, approximate tokens). The E01 audit scripts (`scripts/validation/e01/`, `audit_lib.py`, `audit_manifest.py`) and their logged numbers in `docs/experiments/results/e01.md` are the benchmark for agent-facing improvements.
 5. Commit on `exp/<exp-id>` with a clear message. Write `docs/experiments/results/<exp-id>.md` with: hypothesis, what changed (tools added/removed/renamed), measurements, validation results, outcome (success / partial / failure), risks, and follow-up ideas.
 6. Close your documents, stop your server, and report back in under 300 words: outcome, branch, commit, tool count before and after, key measurements, and anything the orchestrator must know before merging.
