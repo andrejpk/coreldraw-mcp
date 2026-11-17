@@ -2,7 +2,7 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729, later merged 0d4f40a).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 9 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13).
+Budget: 20 child-agent cycles. Used: 10 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13, E13b).
 
 Current: 85 tools, ~22.4k tokens, 25 ruff errors, acceptance 296/296 + failure 6/6.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
@@ -43,7 +43,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | 15 | E15 | Read-only CQL `evaluate` escape hatch (may fold into `find_shapes`) | dropped: covered by `find_shapes(cql=…)` in E04+E11 |
 | 16 | E21 | Agent-eye re-audit with the E01 scripts; compare calls, seconds, bytes, correctness | backlog |
 | 17 | E18 | Final consolidation: README/tool docs, acceptance refresh, regression on all samples | backlog |
-| 8b | E13b | Validate/fix E13 on an idle CorelDRAW: MCP acceptance for the new tools, `render_plates(contain)` check, replace `Curve.WeldWith` with a crash-safe weld, run suites; then merge | backlog (blocked on CorelDRAW relaunch) |
+| 8b | E13b | Validate/fix E13 on an idle CorelDRAW: MCP acceptance for the new tools, `render_plates(contain)` check, replace `Curve.WeldWith` with a crash-safe weld, run suites; then merge | in progress (CorelDRAW relaunched 08:13 on user's "Continue") |
 | — | spare | cycles held for a fix-up or re-run | — |
 
 ## Findings feeding later experiments
