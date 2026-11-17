@@ -47,8 +47,6 @@ def _scoped_page(doc, page_index: int):
 def open_template(path: str) -> ToolResult:
     """打开 CDR 模板文件。path 为模板文件的绝对路径。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _open():
         import os
@@ -68,8 +66,6 @@ def open_template(path: str) -> ToolResult:
 def create_document(width: float, height: float, unit: str = "mm") -> ToolResult:
     """新建指定尺寸的 CorelDRAW 文档。width/height 为文档尺寸，unit 支持 mm/cm/inch/pt/px。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         doc = conn.app.CreateDocument()
@@ -88,8 +84,6 @@ def create_document(width: float, height: float, unit: str = "mm") -> ToolResult
 def save_document(path: str = "") -> ToolResult:
     """保存当前文档。path 为空时保存到原路径，否则另存为指定路径。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _save():
         doc = conn.app.ActiveDocument
@@ -112,8 +106,6 @@ def save_document(path: str = "") -> ToolResult:
 def close_document() -> ToolResult:
     """关闭当前文档。如有未保存修改会提示。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _close():
         doc = conn.app.ActiveDocument
@@ -137,8 +129,6 @@ def close_document() -> ToolResult:
 def add_page() -> ToolResult:
     """在当前文档末尾添加一个新页面，并激活它。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _add():
         doc = conn.app.ActiveDocument
@@ -159,8 +149,6 @@ def add_page() -> ToolResult:
 def set_page_size(width: float, height: float) -> ToolResult:
     """修改当前页面尺寸（mm）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _set():
         doc = conn.app.ActiveDocument
@@ -178,29 +166,20 @@ def set_page_size(width: float, height: float) -> ToolResult:
 
 
 def get_document_info() -> ToolResult:
-    """获取当前文档的状态信息：路径、页数、尺寸、形状数等。"""
+    """Read the active document's path, pages, dimensions and shape counts without changing it."""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _info():
         doc = conn.app.ActiveDocument
         if not doc:
             raise RuntimeError("没有打开的文档")
-        doc.Unit = _CDR_MILLIMETER
         page = doc.ActivePage
-        width, height = _get_page_size(doc)
-
-        shapes_count = 0
-        text_shapes = 0
-        try:
-            shapes = page.Shapes
-            shapes_count = shapes.Count
-            for s in shapes:
-                if s.Type == CDR_TEXT_SHAPE:  # cdrTextShape
-                    text_shapes += 1
-        except Exception:
-            pass
+        unit = doc.Unit
+        width = conn.app.ConvertUnits(page.SizeWidth, unit, _CDR_MILLIMETER)
+        height = conn.app.ConvertUnits(page.SizeHeight, unit, _CDR_MILLIMETER)
+        shapes = page.Shapes
+        # Count inside CorelDRAW rather than making one COM round trip per shape.
+        text_shapes = shapes.FindShapes("", CDR_TEXT_SHAPE, False).Count
 
         layers_info = []
         try:
@@ -216,12 +195,13 @@ def get_document_info() -> ToolResult:
         return {
             "name": doc.FileName or "未命名",
             "path": doc.FilePath or "",
+            "document_path": ntpath.join(doc.FilePath, doc.FileName) if doc.FilePath else None,
             "pages": doc.Pages.Count,
             "current_page": page.Index,
             "width": round(width, 2),
             "height": round(height, 2),
             "unit": "mm",
-            "shapes_count": shapes_count,
+            "shapes_count": shapes.Count,
             "text_shapes_count": text_shapes,
             "layers": layers_info,
         }
@@ -242,8 +222,6 @@ def list_all_text_shapes(
     Converted curves have no editable story and are excluded.
     """
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
     if content_preview_len < 0:
         return ToolResult.fail("content_preview_len must be nonnegative")
 
@@ -300,8 +278,6 @@ def list_all_text_shapes(
 def add_guideline(position: float, orientation: str = "horizontal") -> ToolResult:
     """在当前页面添加辅助线。position 为辅助线位置（mm），orientation 为 horizontal 或 vertical。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _add():
         doc = conn.app.ActiveDocument
@@ -344,8 +320,6 @@ def add_guideline(position: float, orientation: str = "horizontal") -> ToolResul
 def switch_page(page_index: int) -> ToolResult:
     """切换到指定页面。page_index 为页码（从 1 起）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _switch():
         doc = conn.app.ActiveDocument
@@ -368,8 +342,6 @@ def switch_page(page_index: int) -> ToolResult:
 def delete_page(page_index: int) -> ToolResult:
     """删除指定页面。page_index 为页码（从 1 起）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _delete():
         doc = conn.app.ActiveDocument

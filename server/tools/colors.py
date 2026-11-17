@@ -94,8 +94,6 @@ def _find_shape(shape_id: str):
 def set_fill_cmyk(c: float, m: float, y: float, k: float, shape_id: str = "") -> ToolResult:
     """设置形状的 CMYK 填充色。shape_id 为空时作用于选中形状。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _fill():
         if shape_id:
@@ -123,8 +121,6 @@ def set_fill_cmyk(c: float, m: float, y: float, k: float, shape_id: str = "") ->
 def set_fill_rgb(r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
     """设置形状的 RGB 填充色。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _fill():
         if shape_id:
@@ -152,8 +148,6 @@ def set_fill_rgb(r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
 def set_fill_pantone(shape_id: str, pantone_code: str) -> ToolResult:
     """设置形状的 Pantone 专色填充。pantone_code 如 '485 C'。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _fill():
         shape = _find_shape(shape_id)
@@ -183,8 +177,6 @@ def set_fill_pantone(shape_id: str, pantone_code: str) -> ToolResult:
 def set_outline(shape_id: str, width: float, color: str = "", color_mode: str = "CMYK") -> ToolResult:
     """设置形状的描边宽度和颜色。color 格式: CMYK 如 '0,100,100,0'，RGB 如 '255,0,0'。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _outline():
         shape = _find_shape(shape_id)
@@ -210,8 +202,6 @@ def set_outline(shape_id: str, width: float, color: str = "", color_mode: str = 
 def set_no_fill(shape_id: str = "") -> ToolResult:
     """移除形状的填充（设为镂空）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _no_fill():
         if shape_id:
@@ -239,8 +229,6 @@ def set_no_fill(shape_id: str = "") -> ToolResult:
 def set_no_outline(shape_id: str = "") -> ToolResult:
     """移除形状的描边。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _no_outline():
         if shape_id:
@@ -268,8 +256,6 @@ def set_no_outline(shape_id: str = "") -> ToolResult:
 def check_rgb_colors() -> ToolResult:
     """检测文档中的 RGB 颜色（印前检查用，印刷需转 CMYK）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         doc = conn.app.ActiveDocument
@@ -327,8 +313,6 @@ def set_fountain_fill(
 ) -> ToolResult:
     """设置形状的渐变填充。fill_type: linear/radial/conical/square，颜色为 CMYK。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _fill():
         shape = _find_shape(shape_id)
@@ -359,8 +343,6 @@ def set_fountain_fill(
 def set_transparency(shape_id: str, opacity: float) -> ToolResult:
     """设置形状的透明度。opacity: 0-100，0 为完全透明，100 为不透明。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _transparency():
         shape = _find_shape(shape_id)

@@ -61,8 +61,6 @@ def read_excel_data(path: str, sheet: int = 0, has_header: bool = True) -> ToolR
 def merge_record(template_path: str, data: dict, output_path: str) -> ToolResult:
     """单条数据合并：打开模板，按 data 字典替换占位符，保存到 output_path。data key 对应占位符名称。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _merge():
         doc = conn.app.OpenDocument(template_path)
@@ -97,10 +95,6 @@ def merge_record(template_path: str, data: dict, output_path: str) -> ToolResult
 
 def batch_merge(template_path: str, data_path: str, output_dir: str, naming_pattern: str = "{room}") -> ToolResult:
     """批量数据合并：从 Excel 读取数据，逐条生成文件。naming_pattern 支持 {col_name} 占位符。"""
-    conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
-
     # 先读取数据
     read_result = read_excel_data(data_path)
     if not read_result.success:
@@ -148,8 +142,6 @@ def generate_barcode(barcode_type: str, data: str, x: float, y: float, width: fl
         return ToolResult.fail("python-barcode 未安装，请执行 pip install python-barcode")
 
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _generate():
         type_map = {"code128": "code128", "ean13": "ean13", "code39": "code39"}
@@ -206,8 +198,6 @@ def generate_qrcode(data: str, x: float, y: float, size: float) -> ToolResult:
         return ToolResult.fail("qrcode 未安装，请执行 pip install qrcode[pil]")
 
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _generate():
         factory = qrcode.image.svg.SvgImage

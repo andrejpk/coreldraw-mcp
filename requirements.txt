@@ -1,5 +1,6 @@
 # MCP & AI
-fastmcp>=2.0.0
+fastmcp==4.2.0
+mcp==2.3.0
 anthropic>=0.40.0
 uvicorn>=0.30.0
 

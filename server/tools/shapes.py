@@ -76,8 +76,6 @@ def _shape_info(shape) -> dict:
 def create_rectangle(x: float, y: float, width: float, height: float, corner_radius: float = 0) -> ToolResult:
     """创建矩形。x,y 为左上角坐标，支持圆角（corner_radius）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         layer = conn.app.ActiveDocument.ActivePage.ActiveLayer
@@ -95,8 +93,6 @@ def create_rectangle(x: float, y: float, width: float, height: float, corner_rad
 def create_ellipse(cx: float, cy: float, rx: float, ry: float) -> ToolResult:
     """创建椭圆。cx,cy 为中心坐标，rx,ry 为 X/Y 半径。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         layer = conn.app.ActiveDocument.ActivePage.ActiveLayer
@@ -117,8 +113,6 @@ def create_ellipse(cx: float, cy: float, rx: float, ry: float) -> ToolResult:
 def create_line(x1: float, y1: float, x2: float, y2: float) -> ToolResult:
     """创建直线段。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         layer = conn.app.ActiveDocument.ActivePage.ActiveLayer
@@ -135,8 +129,6 @@ def create_line(x1: float, y1: float, x2: float, y2: float) -> ToolResult:
 def import_svg(path: str, x: float = 0, y: float = 0) -> ToolResult:
     """导入 SVG 文件到当前文档。返回导入的形状信息。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _import():
         import os
@@ -164,8 +156,6 @@ def import_svg(path: str, x: float = 0, y: float = 0) -> ToolResult:
 def import_image(path: str, x: float = 0, y: float = 0, width: float = 0, height: float = 0) -> ToolResult:
     """导入位图到当前文档。可指定位置和尺寸。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _import():
         import os
@@ -195,8 +185,6 @@ def import_image(path: str, x: float = 0, y: float = 0, width: float = 0, height
 def set_shape_size(shape_id: str, width: float, height: float) -> ToolResult:
     """设置形状的精确尺寸（mm）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _set():
         shape = _find_shape(shape_id)
@@ -214,8 +202,6 @@ def set_shape_size(shape_id: str, width: float, height: float) -> ToolResult:
 def set_shape_position(shape_id: str, x: float, y: float) -> ToolResult:
     """设置形状的位置（mm）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _set():
         shape = _find_shape(shape_id)
@@ -236,8 +222,6 @@ _BOOLEAN_OPS = {"union": "Weld", "intersect": "Intersect", "subtract": "Trim", "
 def boolean_operation(shape_ids: str, operation: str) -> ToolResult:
     """对指定形状执行布尔运算。shape_ids 为逗号分隔的 ID 列表，operation 支持 union/intersect/subtract/exclude。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     if operation not in _BOOLEAN_OPS:
         return ToolResult.fail(f"不支持的布尔运算: {operation}，可选: {', '.join(_BOOLEAN_OPS.keys())}")
@@ -267,8 +251,6 @@ def boolean_operation(shape_ids: str, operation: str) -> ToolResult:
 def convert_to_curves(shape_id: str) -> ToolResult:
     """将形状转换为曲线（印前必须操作）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _convert():
         shape = _find_shape(shape_id)
@@ -286,8 +268,6 @@ def convert_to_curves(shape_id: str) -> ToolResult:
 def group_shapes(shape_ids: str) -> ToolResult:
     """将多个形状组合为一个群组。shape_ids 为逗号分隔的 ID 列表。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _group():
         ids = [s.strip() for s in shape_ids.split(",") if s.strip()]
@@ -312,8 +292,6 @@ def group_shapes(shape_ids: str) -> ToolResult:
 def find_shape_by_name(name: str) -> ToolResult:
     """按名称查找形状。返回形状的 ID、类型、尺寸等。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _find():
         shape = _find_shape(name)
@@ -367,8 +345,6 @@ def align_shapes(shape_ids: str, alignment: str, reference: str = "selection") -
     reference='selection' 在形状间对齐，reference='page' 对齐到页面边缘。
     shape_ids 为逗号分隔的形状 ID 或名称列表。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     alignment = alignment.lower()
     if alignment not in _ALIGN_DIRECTIONS:
@@ -441,8 +417,6 @@ def distribute_shapes(shape_ids: str, direction: str = "horizontal", spacing: fl
     """将多个形状等距分布。direction: horizontal/vertical。spacing>0 时使用固定间距，
     否则在最小和最大边界之间均匀分布。shape_ids 为逗号分隔。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     direction = direction.lower()
     if direction not in ("horizontal", "vertical"):
@@ -517,8 +491,6 @@ def distribute_shapes(shape_ids: str, direction: str = "horizontal", spacing: fl
 def set_z_order(shape_id: str, action: str) -> ToolResult:
     """控制形状的层级顺序。action: front(置顶)/back(置底)/forward(上移一层)/backward(下移一层)。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     action = action.lower()
     if action not in _Z_ORDER_ACTIONS:
@@ -548,8 +520,6 @@ def set_z_order(shape_id: str, action: str) -> ToolResult:
 def delete_shape(shape_id: str) -> ToolResult:
     """删除指定的形状。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _delete():
         shape = _find_shape(shape_id)
@@ -568,8 +538,6 @@ def delete_shape(shape_id: str) -> ToolResult:
 def rotate_shape(shape_id: str, angle: float, center_x: float = 0, center_y: float = 0) -> ToolResult:
     """旋转形状。angle 为旋转角度（度，正值逆时针），center_x/center_y 为旋转中心（0=形状自身中心）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _rotate():
         shape = _find_shape(shape_id)
@@ -599,8 +567,6 @@ def rotate_shape(shape_id: str, angle: float, center_x: float = 0, center_y: flo
 def ungroup_shapes(shape_id: str, recursive: bool = False) -> ToolResult:
     """取消群组。shape_id 为群组形状的 ID；recursive=True 时递归取消全部子群组。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _ungroup():
         shape = _find_shape(shape_id)
@@ -642,8 +608,6 @@ def scale_shape(shape_id: str, scale_x: float, scale_y: float = 0, keep_proporti
     scale_y 为 Y 方向缩放因子，为 0 时与 scale_x 相同（等比）。
     keep_proportion=True 时忽略 scale_y 强制等比缩放。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     if scale_x <= 0:
         return ToolResult.fail(f"缩放因子必须大于 0，当前 scale_x={scale_x}")
@@ -693,8 +657,6 @@ def select_shapes(by_type: str = "", by_layer: str = "", by_name_pattern: str = 
 
     不修改 CorelDRAW 中的实际选中状态，只返回匹配列表供其他工具使用。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     _TYPE_MAP = {
         "rectangle": 1, "ellipse": 2, "curve": CDR_CURVE_SHAPE, "text": CDR_TEXT_SHAPE,
@@ -771,8 +733,6 @@ def powerclip(content_shape_id: str, container_shape_id: str) -> ToolResult:
     """将 content 形状放入 container 形状内（PowerClip）。
     类似于 AI 的剪切蒙版，用于将图案/文字限制在特定区域内。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _clip():
         content = _find_shape(content_shape_id)

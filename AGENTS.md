@@ -26,12 +26,11 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
    ```python
    def tool_name(param: type) -> ToolResult:
        conn = get_connection()
-       if not conn.status.connected:
-           return ToolResult.fail("CorelDRAW 未连接")
        result = conn.safe_call(lambda: actual_com_work())
        if result["success"]: return ToolResult.ok(...)
        return ToolResult.fail(result.get("error", "失败"))
    ```
+   连接检查、重新连接与超时处理由 `safe_call` 统一管理。不要用缓存的 `conn.status` 拦截工具，也不要重试可能已写入的操作。
 4. **所有工具注册在 `server.py`**，新增工具必须同时在该文件加 `mcp.add_tool()`。
 5. **函数 docstring 即 MCP 工具描述**，会被 Agent 看到，写清楚参数含义。
 6. **COM 常量是硬编码整数**（`cdrDXF=86`, `cdrPNG=776`, `cdrMillimeter=2`, `cdrTextShape=3` 等）。这些常量来自 CorelDRAW 类型库，只有 Windows 上运行 `makepy` 才能生成类型存根，不要试图从 `win32com.client.constants` 导入。
@@ -56,10 +55,9 @@ MCP Server 默认 `stdio` 传输，设 `MCP_TRANSPORT=streamable-http` 启动 HT
 
 ```
 ruff check server/      # lint（line-length=120, py311, E/F/I/N/W）
-python test_e2e.py      # 端到端测试（需 Windows + CorelDRAW 运行中）
+python -m unittest discover -s server -p test_connection.py
+python server/test_e2e.py      # 端到端测试（需 Windows + CorelDRAW 运行中）
 ```
-
-无 pytest 单元测试（dev 依赖已声明但未编写测试文件）。
 
 ## 环境配置
 

@@ -24,8 +24,6 @@ def populate_title_block(
     """填充工程图标题栏。打开工程图 CDR 模板，按参数替换标题栏各字段文字形状，
     保存到 output_path（省略则覆盖原文件）。形状名称须与字段名一致（如 title_project_name）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     if not os.path.isfile(template_path):
         return ToolResult.fail(f"模板文件不存在: {template_path}")
@@ -109,8 +107,6 @@ def assemble_engineering_drawing(
     先填充标题栏，再导入设计文件内容到框架的 design_zone 图层/形状区域。
     title_block_fields 为标题栏字段字典，键名与 populate_title_block 参数一致。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     if not os.path.isfile(design_path):
         return ToolResult.fail(f"设计文件不存在: {design_path}")

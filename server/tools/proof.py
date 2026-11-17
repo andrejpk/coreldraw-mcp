@@ -14,8 +14,6 @@ _PDF_SPOT_AS_SPOT = 0
 
 def _overprint_view(document_path: str, enabled: bool | None = None) -> ToolResult:
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
 
     def read_view():
         doc, actual_path = _scoped_document(conn.app, document_path)
@@ -51,8 +49,6 @@ def get_print_separation_settings(document_path: str) -> ToolResult:
     tool reads current settings without submitting a print job.
     """
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
 
     def read_settings():
         doc, actual_path = _scoped_document(conn.app, document_path)
@@ -110,8 +106,6 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str)
     The active view and original PDF options are preserved. No print job is sent.
     """
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
     destination = Path(output_path)
     if not destination.is_absolute() or destination.suffix.lower() != ".pdf":
         return ToolResult.fail("output_path must be an absolute PDF path")

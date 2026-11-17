@@ -1,45 +1,69 @@
+import argparse
 import os
+import struct
 import sys
 from pathlib import Path
+
+from core.connection import close_connection, get_connection
+from core.models import ToolResult
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.tools import Tool
 from loguru import logger
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
 
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-from core.connection import init_connection, close_connection, get_connection
-from core.models import ToolResult
-
-
-_MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
-_MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
-_MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
-
+_ROOT = Path(__file__).resolve().parent.parent
+_HTTP_OPTIONS = {"path": "/mcp", "stateless_http": True, "json_response": True, "host_origin_protection": True}
 mcp = FastMCP("coreldraw-signage")
 
 
-def setup_logging():
+def setup_logging(*, http):
     logger.remove()
-    logger.add(
-        sys.stderr,
-        level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-    )
-    logger.add(
-        "logs/server.log",
-        rotation="10 MB",
-        retention="7 days",
-        level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
-    )
+    if sys.stderr is not None:
+        logger.add(sys.stderr, level="INFO")
+    if http:
+        logger.add(_ROOT / "logs/server.log", rotation="10 MB", retention="7 days", level="DEBUG")
+
+
+def get_coreldraw_status() -> ToolResult:
+    """Check whether the running CorelDRAW instance responds to COM without opening or changing artwork."""
+    status = get_connection().probe()
+    if status["success"]:
+        return ToolResult.ok(state="ready", version=status["version"])
+    return ToolResult(success=False, error=status["error"], data={"state": status["state"]})
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request):
+    return JSONResponse({"service": "coreldraw-signage", "status": "alive"})
+
+
+@mcp.custom_route("/readyz", methods=["GET"])
+async def readyz(request):
+    status = await run_in_threadpool(get_coreldraw_status)
+    return JSONResponse(status.model_dump(), status_code=200 if status.success else 503)
 
 
 def register_tools():
     from tools import (
-        colors, data_merge, document, effects, engineering, export, geometry,
-        inspection, layers, preflight, proof, shapes, templates, text,
+        colors,
+        data_merge,
+        document,
+        effects,
+        engineering,
+        export,
+        geometry,
+        inspection,
+        layers,
+        preflight,
+        proof,
+        shapes,
+        templates,
+        text,
     )
 
+    mcp.add_tool(Tool.from_function(get_coreldraw_status, annotations={"readOnlyHint": True}))
     mcp.add_tool(document.open_template)
     mcp.add_tool(document.create_document)
     mcp.add_tool(document.save_document)
@@ -146,30 +170,47 @@ def register_tools():
 
 
 def main():
-    setup_logging()
-    logger.info("启动 CorelDRAW Signage MCP Server...")
-
-    if init_connection():
-        logger.info("CorelDRAW 连接成功")
-    else:
-        logger.warning("CorelDRAW 连接失败，服务器将启动但功能受限")
-
+    parser = argparse.ArgumentParser(description="CorelDRAW MCP bridge")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--stdio", action="store_true", help="Read/write MCP on stdin/stdout")
+    mode.add_argument("--local-http", action="store_true", help="Use the workstation endpoint at 127.0.0.1:8765")
+    parser.add_argument("--check", action="store_true", help="Validate the interpreter and tool registration, then exit")
+    args = parser.parse_args()
+    load_dotenv(_ROOT / ".env")
     register_tools()
-    logger.info("工具注册完成")
-
-    if _MCP_TRANSPORT != "stdio":
-        logger.info(f"HTTP 模式启动，监听 http://{_MCP_HOST}:{_MCP_PORT}/mcp")
-        logger.info("本地 Claude/OpenCode 可通过 .mcp.json 中的 url 连接")
-
+    if sys.platform != "win32" or struct.calcsize("P") != 8:
+        raise RuntimeError("Run the CorelDRAW server with 64-bit Python on Windows")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if args.stdio:
+        transport = "stdio"
+    elif args.local_http:
+        transport = "streamable-http"
+    setup_logging(http=transport != "stdio")
+    host = "127.0.0.1" if args.local_http else os.environ.get("MCP_HOST", "127.0.0.1")
+    port = 8765 if args.local_http else int(os.environ.get("MCP_PORT", "8765"))
     try:
-        if _MCP_TRANSPORT != "stdio":
-            mcp.run(transport=_MCP_TRANSPORT, host=_MCP_HOST, port=_MCP_PORT)
+        if transport == "stdio":
+            if not args.check:
+                mcp.run(transport="stdio", show_banner=False)
+        elif transport in {"http", "streamable-http"}:
+            if host not in {"127.0.0.1", "::1", "localhost"}:
+                raise ValueError("The CorelDRAW HTTP server requires a loopback host")
+            if args.check:
+                mcp.http_app(transport="streamable-http", **_HTTP_OPTIONS)
+                return
+            logger.info("CorelDRAW MCP listening on {}:{} (PID {})", host, port, os.getpid())
+            # No MCP session state to invalidate on a process restart. Corel itself is still shared.
+            mcp.run(transport="streamable-http", host=host, port=port, show_banner=False, **_HTTP_OPTIONS)
         else:
-            mcp.run(transport=_MCP_TRANSPORT)
+            raise ValueError("MCP_TRANSPORT must be stdio or streamable-http")
     finally:
         close_connection()
-        logger.info("MCP Server 已关闭")
+        logger.info("CorelDRAW MCP stopped")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.exception("CorelDRAW MCP startup or runtime failure")
+        raise

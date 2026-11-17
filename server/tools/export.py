@@ -99,8 +99,6 @@ def export_pdf(
 ) -> ToolResult:
     """导出印刷级 PDF。支持色彩配置、出血、裁切线和多页导出。可选 PDF/X 标准。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -161,8 +159,6 @@ def export_pdf(
 def export_dxf(path: str, version: str = "R14", layer_filter: str = "", export_hidden: bool = False) -> ToolResult:
     """导出 DXF 文件（用于激光雕刻/切割）。支持版本选择和图层过滤。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     dxf_ver = _DXF_VERSION.get(version, 1)
 
@@ -210,8 +206,6 @@ def export_dxf(path: str, version: str = "R14", layer_filter: str = "", export_h
 def export_ai(path: str) -> ToolResult:
     """导出 Adobe Illustrator AI 格式。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -232,8 +226,6 @@ def export_ai(path: str) -> ToolResult:
 def export_svg(path: str) -> ToolResult:
     """导出 SVG 矢量格式。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -254,8 +246,6 @@ def export_svg(path: str) -> ToolResult:
 def export_png(path: str, dpi: int = 300, width: int = 0, background_transparent: bool = False) -> ToolResult:
     """导出 PNG 位图。可指定 DPI、宽度和透明背景。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -325,8 +315,6 @@ def export_png(path: str, dpi: int = 300, width: int = 0, background_transparent
 def export_jpeg(path: str, quality: int = 85, dpi: int = 300) -> ToolResult:
     """导出 JPEG 位图。可指定压缩质量(0-100)和分辨率。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -397,8 +385,6 @@ def export_jpeg(path: str, quality: int = 85, dpi: int = 300) -> ToolResult:
 def export_preview_png(path: str, width: int = 800) -> ToolResult:
     """导出低分辨率 PNG 预览图，供 AI Agent 进行视觉检查。width 为像素宽度。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _export():
         doc = conn.app.ActiveDocument
@@ -468,8 +454,6 @@ def export_preview_png(path: str, width: int = 800) -> ToolResult:
 def batch_export(pages: str, format: str, output_dir: str) -> ToolResult:
     """批量导出指定页面。pages 为 "1,2,3" 或 "1-5" 或 "all"，format 支持 pdf/dxf/png。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     format = format.lower()
 

@@ -7,7 +7,8 @@
 
 - COM 所有调用必须在同一 STA 线程（`_COMThread`）执行；HTTP 模式下 FastMCP 用线程池分发，不能直接在工具函数里做 COM 调用
 - `disconnect()` 只释放 COM 引用，不调用 `Quit()`；CorelDRAW 生命周期由用户自己管理
-- `reconnect_on_failure=False`：工具逻辑失败不应触发重连，避免级联崩溃
+- 工具逻辑失败不应触发重连或重试。只在连接失效时重新附加；已经开始的工具绝不自动重放。COM 超时不等于取消。
+- 多个 stdio 客户端可能各自启动桥接进程。Windows 会话内的命名互斥锁防止这些进程同时操作 CorelDRAW。
 
 
 ## 已知坑

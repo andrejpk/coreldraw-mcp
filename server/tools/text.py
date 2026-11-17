@@ -140,8 +140,6 @@ def _apply_default_text_style(shape, frame_height: float) -> None:
 def set_text_content(shape_id: str, content: str) -> ToolResult:
     """替换文字形状的文本内容。shape_id 为形状名称或 ID。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _set():
         shape = _find_text_shape(shape_id)
@@ -168,8 +166,6 @@ def set_text_style(
 ) -> ToolResult:
     """设置文字形状的样式：字体、字号、粗体、斜体、对齐。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _style():
         shape = _find_text_shape(shape_id)
@@ -212,8 +208,6 @@ def set_text_style(
 def fit_text_to_frame(shape_id: str) -> ToolResult:
     """将段文字自适应到文本框大小（仅对段落文字有效）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _fit():
         shape = _find_text_shape(shape_id)
@@ -233,8 +227,6 @@ def fit_text_to_frame(shape_id: str) -> ToolResult:
 def check_text_overflow(shape_id: str) -> ToolResult:
     """检查文字是否超出文本框（溢出）。返回溢出状态。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         shape = _find_text_shape(shape_id)
@@ -269,8 +261,6 @@ def check_text_overflow(shape_id: str) -> ToolResult:
 def convert_text_to_curves(shape_id: str) -> ToolResult:
     """将文字转换为曲线（印前必须操作，防止字体依赖）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _convert():
         shape = _find_text_shape(shape_id)
@@ -288,8 +278,6 @@ def convert_text_to_curves(shape_id: str) -> ToolResult:
 def create_text_frame(x: float, y: float, width: float, height: float, text: str) -> ToolResult:
     """创建段落文本框。返回形状 ID。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         doc = conn.app.ActiveDocument

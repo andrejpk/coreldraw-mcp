@@ -13,6 +13,8 @@
 
 ---
 
+[2026-11-16 FIX] Codex launches the CorelDRAW bridge over stdio; explicit COM readiness, no replay of edits, cross-client serialization, and paged shape inspection → ../../README.md
+
 [2026-06-04 FIX] 新增英文 README，原中文版改为 README-CN，修正两处 License 行错写的 MIT → Apache 2.0
 
 [2026-06-04 FIX] 版权主体改为深圳市玄熵智能科技有限责任公司，新增 NOTICE 文件，格式与 My-Hermes-Desktop 一致

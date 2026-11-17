@@ -11,8 +11,6 @@ _CDR_MILLIMETER = 3
 def check_dimensions(expected_width: float, expected_height: float, tolerance: float = 0.5) -> ToolResult:
     """校验当前页面尺寸是否在容差范围内。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         doc = conn.app.ActiveDocument
@@ -45,8 +43,6 @@ def check_dimensions(expected_width: float, expected_height: float, tolerance: f
 def check_text_overflow_all() -> ToolResult:
     """检查全文档所有文字形状的溢出状态。返回所有溢出的文字列表。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         doc = conn.app.ActiveDocument
@@ -103,8 +99,6 @@ def check_text_overflow_all() -> ToolResult:
 def check_missing_fonts() -> ToolResult:
     """检查文档是否使用了系统中缺失的字体。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         doc = conn.app.ActiveDocument
@@ -183,8 +177,6 @@ def check_missing_fonts() -> ToolResult:
 def check_rgb_colors() -> ToolResult:
     """检查文档中的 RGB 颜色（印前检查 — 印刷需转为 CMYK）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _check():
         doc = conn.app.ActiveDocument
@@ -238,8 +230,6 @@ def check_rgb_colors() -> ToolResult:
 def get_color_report() -> ToolResult:
     """生成当前页顶层形状的纯色填充报告（CMYK、RGB、Pantone）。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _report():
         doc = conn.app.ActiveDocument

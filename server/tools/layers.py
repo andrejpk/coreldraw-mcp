@@ -31,8 +31,6 @@ def _find_shape(shape_id: str):
 def create_layer(name: str, color: str = "") -> ToolResult:
     """创建新图层。color 用于图层标识（激光机识别），如 'red' / 'blue'。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _create():
         page = conn.app.ActiveDocument.ActivePage
@@ -59,8 +57,6 @@ def create_layer(name: str, color: str = "") -> ToolResult:
 def get_layers() -> ToolResult:
     """获取当前页面的所有图层信息。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _list():
         page = conn.app.ActiveDocument.ActivePage
@@ -103,8 +99,6 @@ def get_layers() -> ToolResult:
 def assign_to_layer(shape_id: str, layer_name: str) -> ToolResult:
     """将形状移动到指定图层。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _assign():
         shape = _find_shape(shape_id)
@@ -136,8 +130,6 @@ def assign_to_layer(shape_id: str, layer_name: str) -> ToolResult:
 def set_layer_visible(layer_name: str, visible: bool) -> ToolResult:
     """设置图层的可见性。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _set():
         page = conn.app.ActiveDocument.ActivePage
@@ -158,8 +150,6 @@ def set_layer_visible(layer_name: str, visible: bool) -> ToolResult:
 def lock_layer(layer_name: str) -> ToolResult:
     """锁定图层，防止意外编辑。"""
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW 未连接")
 
     def _lock():
         page = conn.app.ActiveDocument.ActivePage
@@ -194,8 +184,6 @@ def get_page_layers(document_path: str, page_index: int) -> ToolResult:
     page_index is one-based. Shared master layers are identified in the result.
     """
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
 
     def inspect():
         doc, actual_path = _scoped_document(conn.app, document_path)
@@ -223,8 +211,6 @@ def set_page_layer_state(
     desktop/grid layers, and other edits to special layers are excluded.
     """
     conn = get_connection()
-    if not conn.status.connected:
-        return ToolResult.fail("CorelDRAW is not connected")
     if property_name not in _LAYER_PROPERTIES:
         return ToolResult.fail("property_name must be visible, editable, or printable")
 
