@@ -2,9 +2,9 @@
 
 Integration branch: `claude/experiments-integration` (cut from `claude/production-followup-tools` @ d41c729, later merged 0d4f40a).
 Protocol: [PROTOCOL.md](PROTOCOL.md). Lab folder: `C:\CorelMcpLab` (templates, sample copies, per-run copies, worktrees).
-Budget: 20 child-agent cycles. Used: 13 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13, E13b, E07+E06, E19+E12, E14).
+Budget: 20 child-agent cycles. Used: 13 of 20 (E00, E01, E08, E17a, E03, E02+E05, E10, E04+E11, E13, E13b, E07+E06, E19+E12, E14). Program ended after E14 at the user's request; summary in [REPORT.md](REPORT.md).
 
-Current: 67 tools, ~13.9k tokens, 11 ruff errors, acceptance 465/465 + failure 19/19.
+Final: 60 tools, ~13.5k tokens (54,070 chars), 11 ruff errors, acceptance 504/504 + failure 19/19.
 Baseline: 99 registered tools, catalog ~20.1k tokens (80,487 chars), 31 ruff errors, 37/37 MCP acceptance checks (incl. Ghostscript plate renders), 3/3 failure-path checks.
 
 Status values: **backlog**, **in progress**, **completed: success | partial | failure**, **dropped**.
@@ -25,6 +25,7 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | E13b | Validate and fix E13 on an idle CorelDRAW | completed: success | No crash (same CorelDRAW PID throughout; open-document gate before every session). `offset_silhouette` now welds temp copies with `Shape.Weld` + contour effect (no in-memory curve APIs), 35 s self-undoing deadline, cap 1,000. Fixed multi-target same-layer bug in `duplicate_shapes`/`convert_to_curves`/`apply_contour`/`separate_effect`. T6a through MCP 9 calls / 9.2 s (underbase itself 1 call / 1.9 s); `render_plates(contain)` 0 px protrusion at 0.5 pt inset, seeded fault caught. E13+E13b net: 85 → 81 tools. Acceptance 365/365, failure 13/13, ruff 24, catalog ~22.6k tokens. Limits: ~100 outlined specks per call; `combine_shapes` has no deadline; effect groups refused. [results](results/e13b.md) | merged together with E13 |
 | E07+E06 | Layers + transform/arrange + delete/create/import | completed: success | 81 → 67 tools, catalog ~22.6k → ~21.5k tokens. 25 legacy tools → 11 exact-ID tools: added `list_layers`, `set_layer_properties`, `move_shapes_to_layer`, `transform_shapes`, `arrange_shapes`, `delete_shapes`, `create_shape`, `import_file` (working `Layer.Import`); `create_layer`, `group_shapes` (+ungroup), `powerclip` (place/extract) re-signed; `_find_shape` deleted; `combine_shapes` gets 35 s self-undo deadline. T6c 4 calls/1.65 s → 3/0.65 s; T6a 9/9.2 s → 6/7.7 s; Good News delete 300 nested specks 41.4 s → 3.6 s. Works around hidden-layer move/import quirks inside the undo step. Acceptance 451/451, failure 19/19, ruff 17. [results](results/e07.md) | merged |
 | E19+E12 | Catalog diet + feedback quality | completed: success | 67 tools unchanged; catalog ~21.5k → **~13.9k tokens (−35 %)**: output schema removed (`output_schema=None`, payload byte-identical), nullable branches dropped, all descriptions English, shared conventions in a 1.1k-char server instructions block, annotations set. New `core/results.py` (`respond`/`failure`) replaces 6 wrappers and ~40 inline checks; failures carry `data.state` + target context; COM errors readable; silent `except: pass` removed, which exposed real bugs (`set_text_style` reported unmade changes, `check_text_overflow_all` skipped overflow). Catalog budget check (`catalog_size.py --budget`, in `accept_mcp`). Acceptance 465/465, failure 19/19, ruff 11. [results](results/e19.md) | merged |
+| E14 | Text tools: `inspect_text`, `edit_text`, text via `create_shape`; MCP `isError` | completed: success | 67 → 60 tools, catalog ~13.9k → ~13.5k tokens. `inspect_text` (exact IDs, page or document: content, font/fill runs, outline, overflow, missing fonts) and `edit_text` (minimal middle replacement keeps runs; `keep_runs` refuses cross-run replacement; range styles; fit to frame) replace 9 tools. Failures now return MCP `isError: true` with the structured payload. Good News p1 text audit 22 calls / 9.5 s → 1 call / 1.26 s; Kings 9 / 2.85 s → 1 / 1.05 s; film title mesh edit keeps its spot ink. Found: automation cannot write non-BMP characters; old `set_text_style` sent right-align as left. Acceptance 504/504, failure 19/19, ruff 11. [results](results/e14.md) | merged |
 
 ## Queue (in run order, revised after E01)
 
@@ -39,14 +40,14 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 | 8 | E13 | `offset_silhouette` (copy + weld + contour + break apart + target layer + overprint, exclusions by color) and `combine_shapes` (weld/trim/intersect/combine, keep sources, target layer) | completed: partial (not merged; follow-up E13b) |
 | 9 | E07+E06 | Layers + transform/arrange (merged to save a cycle): `list_layers` / `set_layer_properties` / `move_shapes_to_layer` (exact IDs); `transform_shapes`, `arrange_shapes`, multi-ID `delete_shapes`; `combine_shapes` deadline; fix or remove broken `import_svg`/`import_image` | completed: success |
 | 11 | E19+E12 | Catalog diet and feedback quality: drop or share the repeated `ToolResult` output schema (~8.7k tokens), English descriptions, structured units, no silent `except: pass`, token-budget check in the acceptance suite | completed: success |
-| 12 | E14 | Text: `inspect_text` / `edit_text` (content, style, run fills, overflow, fonts); `convert_to_curves` over IDs | in progress |
-| 13 | E09 | `export_document` (formats, pages, layers, IDs) replacing 8 export tools | backlog |
-| 14 | E16 | Domain tools (templates, engineering, data merge, barcode, `check_dimensions`): keep / opt-in module / remove | backlog |
+| 12 | E14 | Text: `inspect_text` / `edit_text` (content, style, run fills, overflow, fonts); `convert_to_curves` over IDs | completed: success |
+| 13 | E09 | `export_document` (formats, pages, layers, IDs) replacing 8 export tools | not run: program ended after E14 at the user's request |
+| 14 | E16 | Domain tools (templates, engineering, data merge, barcode, `check_dimensions`): keep / opt-in module / remove | not run: program ended after E14 at the user's request |
 | 15 | E15 | Read-only CQL `evaluate` escape hatch (may fold into `find_shapes`) | dropped: covered by `find_shapes(cql=…)` in E04+E11 |
-| 16 | E21 | Agent-eye re-audit with the E01 scripts; compare calls, seconds, bytes, correctness | backlog |
-| 17 | E18 | Final consolidation: README/tool docs, acceptance refresh, regression on all samples | backlog |
+| 16 | E21 | Agent-eye re-audit with the E01 scripts; compare calls, seconds, bytes, correctness | not run: program ended after E14 at the user's request |
+| 17 | E18 | Final consolidation: README/tool docs, acceptance refresh, regression on all samples | not run: program ended after E14 at the user's request |
 | 8b | E13b | Validate/fix E13 on an idle CorelDRAW: MCP acceptance for the new tools, `render_plates(contain)` check, replace `Curve.WeldWith` with a crash-safe weld, run suites; then merge | completed: success |
-| — | spare | cycles held for a fix-up or re-run | — |
+| — | spare | 7 cycles unused | — |
 
 ## Findings feeding later experiments
 
@@ -58,7 +59,6 @@ Status values: **backlog**, **in progress**, **completed: success | partial | fa
 - E04: native `FindShapes` treats Name as an exact filter and skips PowerClips (not used). CQL refuses method calls, so `cql` is read-only.
 - E13b: ~100 outlined specks per `offset_silhouette` call; effect groups refused.
 - E07: moves to another page refused; group/move-to-layer accept top-level shapes only; `import_file` tested with SVG and PNG only.
-- E19: failures still return MCP `isError: false` (structured `success: false`); consider `isError: true` with structured data.
 - E08: edits activate their target document (Undo hazard); `test_e2e.py` updated but not run.
 
 ### From E00

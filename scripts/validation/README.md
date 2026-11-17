@@ -1,6 +1,6 @@
 # Disposable-fixture validation scripts (2026-11-17)
 
-Run from `server/` with the repo venv against a running CorelDRAW 2022. They build their own fixtures in
+Run from `server/` with the repo venv against a running CorelDRAW 2022. Set `PYTHONIOENCODING=utf-8` when redirecting output (results contain non-ASCII text). They build their own fixtures in
 `<dir>\fx` and never open production files. `<dir>` is any scratch folder containing these scripts.
 
 | Script | Purpose |
