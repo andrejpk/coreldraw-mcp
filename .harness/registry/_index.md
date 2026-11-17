@@ -13,6 +13,8 @@
 
 ---
 
+[2026-11-17 10:30] DONE MCP experiment program: 13 of 20 cycles, 99 → 60 tools, catalog 20.1k → 13.5k tokens, acceptance 504/504 + failure 19/19; PR andrejpk/coreldraw-mcp#2 → ../../docs/experiments/REPORT.md
+
 [2026-11-17 01:50] FIX Installed Ghostscript 10.08.0; layer proofs now make a hidden target visible (hidden layers exported as default-off PDF layers rendered blank); acceptance 37/37 with plate checks
 
 [2026-11-17 01:35] WIP PLAN MCP improvement experiment program started on claude/experiments-integration; protocol + backlog in docs/experiments/, E00 fixture agent running → ../../docs/experiments/backlog.md
