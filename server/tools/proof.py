@@ -97,6 +97,51 @@ def _available_plates(separations):
     return configured
 
 
+def _proof_destination(output_path):
+    destination = Path(output_path)
+    if not destination.is_absolute() or destination.suffix.lower() != ".pdf":
+        raise ValueError("output_path must be an absolute PDF path")
+    if destination.exists() or not destination.parent.is_dir():
+        raise ValueError("Choose a new filename in an existing directory")
+    return destination
+
+
+def _publish_page(doc, page_index, destination):
+    """Publish one page with native spots and overprints, restoring the PDF settings. Returns bytes written."""
+    settings = doc.PDFSettings
+    proof = {
+        "PublishRange": _PDF_PAGE_RANGE, "PageRange": str(page_index), "ColorMode": _PDF_NATIVE_COLOR,
+        "OutputSpotColorsAs": _PDF_SPOT_AS_SPOT, "Overprints": True,
+        "CropMarks": False, "RegistrationMarks": False,
+    }
+    original = {name: getattr(settings, name) for name in proof}
+    with TemporaryDirectory(prefix="coreldraw-proof-", dir=destination.parent) as directory:
+        staged = Path(directory, "page.pdf")
+        try:
+            for name, value in proof.items():
+                setattr(settings, name, value)
+            if any(getattr(settings, name) != value for name, value in proof.items()):
+                raise RuntimeError("CorelDRAW did not accept the requested PDF proof settings")
+            doc.PublishToPDF(str(staged))
+        finally:
+            failed = []
+            for name, value in original.items():
+                try:
+                    setattr(settings, name, value)
+                    if getattr(settings, name) != value:
+                        failed.append(name)
+                except Exception:
+                    failed.append(name)
+            if failed:
+                raise RuntimeError(f"Failed to restore PDF settings: {', '.join(failed)}")
+        with staged.open("rb") as pdf:
+            if pdf.read(5) != b"%PDF-":
+                raise RuntimeError("CorelDRAW did not produce a PDF")
+        size = staged.stat().st_size
+        staged.rename(destination)
+    return size
+
+
 def export_page_proof_pdf(document_path: str, page_index: int, output_path: str) -> ToolResult:
     """Publish one page as a composite proof PDF with native colors, spots, and overprint instructions.
 
@@ -106,49 +151,86 @@ def export_page_proof_pdf(document_path: str, page_index: int, output_path: str)
     The active view and original PDF options are preserved. No print job is sent.
     """
     conn = get_connection()
-    destination = Path(output_path)
-    if not destination.is_absolute() or destination.suffix.lower() != ".pdf":
-        return ToolResult.fail("output_path must be an absolute PDF path")
-    if destination.exists() or not destination.parent.is_dir():
-        return ToolResult.fail("Choose a new filename in an existing directory")
+    try:
+        destination = _proof_destination(output_path)
+    except ValueError as exc:
+        return ToolResult.fail(str(exc))
 
     def publish():
         doc, actual_path = _scoped_document(conn.app, document_path)
         _scoped_page(doc, page_index)
-        settings = doc.PDFSettings
-        proof = {
-            "PublishRange": _PDF_PAGE_RANGE, "PageRange": str(page_index), "ColorMode": _PDF_NATIVE_COLOR,
-            "OutputSpotColorsAs": _PDF_SPOT_AS_SPOT, "Overprints": True,
-            "CropMarks": False, "RegistrationMarks": False,
-        }
-        original = {name: getattr(settings, name) for name in proof}
-        with TemporaryDirectory(prefix="coreldraw-proof-", dir=destination.parent) as directory:
-            staged = Path(directory, "page.pdf")
-            try:
-                for name, value in proof.items():
-                    setattr(settings, name, value)
-                if any(getattr(settings, name) != value for name, value in proof.items()):
-                    raise RuntimeError("CorelDRAW did not accept the requested PDF proof settings")
-                doc.PublishToPDF(str(staged))
-            finally:
-                failed = []
-                for name, value in original.items():
-                    try:
-                        setattr(settings, name, value)
-                        if getattr(settings, name) != value:
-                            failed.append(name)
-                    except Exception:
-                        failed.append(name)
-                if failed:
-                    raise RuntimeError(f"Failed to restore PDF settings: {', '.join(failed)}")
-            with staged.open("rb") as pdf:
-                if pdf.read(5) != b"%PDF-":
-                    raise RuntimeError("CorelDRAW did not produce a PDF")
-            size = staged.stat().st_size
-            staged.rename(destination)
+        size = _publish_page(doc, page_index, destination)
         return {
             "document_path": actual_path, "page_index": page_index, "output_path": str(destination),
             "bytes": size, "proof_source": "CorelDRAW Publish to PDF",
+        }
+
+    result = conn.safe_call(publish)
+    if result["success"]:
+        return ToolResult.ok(**result["result"])
+    return ToolResult.fail(result["error"])
+
+
+def _layer_label(layer):
+    return f"{layer.Name} ({'shared' if layer.Master else 'page'})"
+
+
+def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str, output_path: str) -> ToolResult:
+    """Publish a proof PDF of one page containing only one named page layer, with native spots and overprints.
+
+    layer_name must match exactly one ordinary layer local to the page. Every other layer on the
+    page, including shared master layers, is made non-printing only while publishing. Printability,
+    not visibility, controls Publish to PDF, so a hidden target layer is still included. Afterward the
+    tool restores and verifies each layer's printability, the PDF settings, the active page, the
+    document unit, and the unsaved-changes flag, after success or failure. No print job is sent.
+    """
+    conn = get_connection()
+    try:
+        destination = _proof_destination(output_path)
+    except ValueError as exc:
+        return ToolResult.fail(str(exc))
+
+    def publish():
+        doc, actual_path = _scoped_document(conn.app, document_path)
+        page = _scoped_page(doc, page_index)
+        layers = list(page.AllLayers)
+        targets = [layer for layer in layers if layer.Name == layer_name and not layer.Master
+                   and not layer.IsSpecialLayer]
+        if len(targets) != 1:
+            raise ValueError(f"Expected one page layer named {layer_name!r}; found {len(targets)}")
+        target = targets[0]
+        original = [(layer, bool(layer.Printable)) for layer in layers]
+        state = (doc.Dirty, doc.ActivePage.Index, doc.Unit)
+        excluded = [_layer_label(layer) for layer, printable in original
+                    if printable and layer is not target and layer.Shapes.Count]
+        try:
+            for layer, printable in original:
+                wanted = layer is target
+                if printable != wanted:
+                    layer.Printable = wanted
+                if bool(layer.Printable) != wanted:
+                    raise RuntimeError(f"CorelDRAW did not change printability of layer {_layer_label(layer)}")
+            size = _publish_page(doc, page_index, destination)
+        finally:
+            failed = []
+            for layer, printable in original:
+                try:
+                    if bool(layer.Printable) != printable:
+                        layer.Printable = printable
+                    if bool(layer.Printable) != printable:
+                        failed.append(_layer_label(layer))
+                except Exception:
+                    failed.append(_layer_label(layer))
+            doc.Dirty = state[0]
+            if failed:
+                raise RuntimeError(f"Failed to restore layer printability: {', '.join(failed)}")
+            if (doc.Dirty, doc.ActivePage.Index, doc.Unit) != state:
+                raise RuntimeError("The unsaved-changes flag, active page, or document unit changed")
+        return {
+            "document_path": actual_path, "page_index": page_index, "layer_name": layer_name,
+            "layer_visible": bool(target.Visible), "layer_shape_count": target.Shapes.Count,
+            "excluded_printable_layers": excluded, "output_path": str(destination), "bytes": size,
+            "proof_source": "CorelDRAW Publish to PDF",
         }
 
     result = conn.safe_call(publish)

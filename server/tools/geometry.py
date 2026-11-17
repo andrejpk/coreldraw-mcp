@@ -5,7 +5,17 @@ import math
 from core.drawing import CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, walk_shapes
 from core.models import ToolResult
 from tools.document import _UNIT_MAP
-from tools.inspection import _exact_shapes, _on_shape, _on_shapes
+from tools.inspection import (
+    _CDR_UNIFORM_FILL,
+    _STRUCTURE_BATCH,
+    _exact_shapes,
+    _fill_details,
+    _on_shape,
+    _on_shapes,
+    _outline_details,
+    _query,
+    _query_path,
+)
 from tools.shapes import _static_id
 
 _ANCHORS = {
@@ -21,6 +31,7 @@ _ANCHORS = {
 }
 _UNITS = {unit: _UNIT_MAP[unit] for unit in ("mm", "cm", "inch", "pt")}
 _CDR_TENTH_MICRON = 0
+_WELDABLE = (1, 2, CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, 26)
 
 
 def set_shape_position_exact(
@@ -134,7 +145,7 @@ def weld_copies_by_id(document_path: str, page_index: int, shape_ids: list[str])
         return ToolResult.fail("Provide at least two unique source shape IDs")
 
     def weld(app, doc, shapes):
-        if any(shape.Type not in (1, 2, CDR_CURVE_SHAPE, CDR_POLYGON_SHAPE, CDR_TEXT_SHAPE, 26) for shape in shapes):
+        if any(shape.Type not in _WELDABLE for shape in shapes):
             raise ValueError("Weld requires individual vector shapes or editable text. Inspect groups for child IDs.")
         live_copies = {}
         doc.BeginCommandGroup("Weld shape copies")
@@ -170,6 +181,133 @@ def weld_copies_by_id(document_path: str, page_index: int, shape_ids: list[str])
             doc.EndCommandGroup()
 
     return _on_shapes(document_path, page_index, shape_ids, weld, write=True)
+
+
+def _top_level_index(layer, shape):
+    """Return the shape's one-based stacking index if it is a direct child of the layer."""
+    index = shape.ZOrder
+    shapes = layer.Shapes
+    if not 1 <= index <= shapes.Count or _static_id(shapes.Item(index)) != _static_id(shape):
+        return None
+    return index
+
+
+def _neighbor_id(layer, index):
+    shapes = layer.Shapes
+    return _static_id(shapes.Item(index)) if 1 <= index <= shapes.Count else None
+
+
+def _bounds(shape):
+    return shape.LeftX, shape.BottomY, shape.RightX, shape.TopY
+
+
+def _union(boxes):
+    left, bottom, right, top = zip(*boxes, strict=True)
+    return min(left), min(bottom), max(right), max(top)
+
+
+def _paint(shape):
+    """Native fill, outline, and overprint identity that welding must preserve."""
+    return {
+        "fill": _fill_details(shape), "outline": _outline_details(shape),
+        "overprint_fill": bool(shape.OverprintFill), "overprint_outline": bool(shape.OverprintOutline),
+    }
+
+
+def weld_consecutive_shapes(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
+    """Weld two or more exact, consecutively stacked shapes on one layer into one shape in their place.
+
+    Every shape must be a direct child of the same editable layer on the page, adjacent in stacking
+    order, without effects, and share one uniform fill (spot name and tint included), outline, and
+    overprint flags. The result keeps that paint and the stacking position between the original
+    neighbors. Returns the result ID, its neighbors, bounds, and area. The edit is one undo step.
+    A failure before verification undoes the partial weld.
+    """
+    if len(shape_ids) < 2:
+        return ToolResult.fail("Provide at least two unique shape IDs")
+
+    def weld(app, doc, shapes):
+        layer = shapes[0].Layer
+        indices = [_top_level_index(layer, shape) for shape in shapes]
+        if None in indices:
+            raise ValueError("Each shape must be a direct child of the same layer. Ungroup or inspect parent IDs first.")
+        ordered = sorted(zip(indices, shape_ids, shapes, strict=True), key=lambda item: item[0])
+        top, bottom = ordered[0][0], ordered[-1][0]
+        if bottom - top + 1 != len(ordered):
+            raise ValueError(f"The shapes are not consecutive in stacking order (positions {sorted(indices)})")
+        if any(shape.Type not in _WELDABLE for shape in shapes):
+            raise ValueError("Weld requires individual vector shapes. Inspect groups for child IDs.")
+        if any(shape.Effects.Count for shape in shapes):
+            raise ValueError("Remove or separate effects before welding")
+        paint = _paint(shapes[0])
+        if paint["fill"]["type"] != _CDR_UNIFORM_FILL:
+            raise ValueError("The shapes must have a uniform fill")
+        color = shapes[0].Fill.UniformColor
+        for shape_id, shape in zip(shape_ids[1:], shapes[1:], strict=True):
+            if _paint(shape) != paint or not shape.Fill.UniformColor.IsSame(color):
+                raise ValueError(f"Shape {shape_id} has a different fill, tint, outline, or overprint flag")
+        above, below = _neighbor_id(layer, top - 1), _neighbor_id(layer, bottom + 1)
+        expected_box = _union([_bounds(shape) for shape in shapes])
+        areas = [shape.DisplayCurve.Area for shape in shapes]
+
+        doc.BeginCommandGroup("Weld consecutive shapes")
+        try:
+            result = ordered[0][2]
+            for _, _, shape in ordered[1:]:
+                result = shape.Weld(result, False, False)
+                if result is None:
+                    raise RuntimeError("CorelDRAW did not return a weld result")
+        except Exception as exc:
+            doc.EndCommandGroup()
+            if _surviving(layer, shape_ids) != set(shape_ids):
+                doc.Undo(1)
+                if _surviving(layer, shape_ids) != set(shape_ids):
+                    raise RuntimeError(f"{exc}. Undo did not restore every source ID; inspect the layer") from exc
+                raise RuntimeError(f"{exc}. The partial weld was undone") from exc
+            raise
+        doc.EndCommandGroup()
+
+        result_id = _static_id(result)
+        index = _top_level_index(layer, result)
+        area = result.DisplayCurve.Area
+        tolerance = app.ConvertUnits(1, _CDR_TENTH_MICRON, doc.Unit)
+        data = {
+            "source_shape_ids": shape_ids, "result_shape_id": result_id, "layer_name": layer.Name,
+            "stack_index": index, "above_shape_id": above, "below_shape_id": below,
+            "bounds": dict(zip(("left", "bottom", "right", "top"), _bounds(result), strict=True)),
+            "area": area, "source_area_sum": sum(areas), "largest_source_area": max(areas),
+            "paint": _paint(result),
+        }
+        problems = []
+        if result_id in shape_ids or _surviving(layer, shape_ids):
+            problems.append("source shapes remain")
+        if index is None or _neighbor_id(layer, index - 1) != above or _neighbor_id(layer, index + 1) != below:
+            problems.append("the stacking position changed")
+        if data["paint"] != paint or not result.Fill.UniformColor.IsSame(color):
+            problems.append("the paint changed")
+        if any(abs(a - b) > tolerance for a, b in zip(_bounds(result), expected_box, strict=True)):
+            problems.append("the bounds differ from the union of the sources")
+        area_tolerance = 1e-6 * sum(areas) + tolerance * tolerance
+        if not max(areas) - area_tolerance <= area <= sum(areas) + area_tolerance:
+            problems.append("the area is outside the expected range")
+        if problems:
+            data["verification_error"] = f"Weld verification failed: {'; '.join(problems)}. Inspect or undo the last step."
+        return data
+
+    return _on_shapes(document_path, page_index, shape_ids, weld, write=True)
+
+
+def _surviving(layer, shape_ids):
+    """Return the IDs that still exist among the layer's direct children."""
+    count = layer.Shapes.Count
+    if not count:
+        return set()
+    anchor = layer.Shapes.Item(1)
+    present = set()
+    for start in range(1, count + 1, _STRUCTURE_BATCH):
+        indices = range(start, min(count, start + _STRUCTURE_BATCH - 1) + 1)
+        present.update(str(value) for value in _query(anchor, [f"{_query_path((index,))}.StaticID" for index in indices]))
+    return present & set(shape_ids)
 
 
 def delete_shape_by_id(document_path: str, page_index: int, shape_id: str) -> ToolResult:

@@ -26,8 +26,6 @@ def copy_shape_fill(
             raise ValueError("The donor must have a uniform fill")
         color = donor.Fill.UniformColor.GetCopy()
         expected = _color_details(color)
-        if expected["kind"] == "spot":
-            expected["tint"] = color.Tint
         originals = []
         for target in targets:
             fill = target.Fill
@@ -43,8 +41,6 @@ def copy_shape_fill(
                 target.Fill.ApplyUniformFill(color)
                 actual = target.Fill.UniformColor
                 details = _color_details(actual)
-                if details["kind"] == "spot":
-                    details["tint"] = actual.Tint
                 if not actual.IsSame(color) or details != expected:
                     raise RuntimeError(f"Color readback differs for target {shape_id}")
                 observed[shape_id] = details

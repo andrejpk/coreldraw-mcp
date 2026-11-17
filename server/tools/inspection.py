@@ -1,6 +1,6 @@
 """Inspect drawing objects and bridge exact IDs to CorelDRAW UI selection."""
 
-from itertools import islice
+from itertools import groupby
 from typing import Literal
 
 from core.connection import get_connection
@@ -10,7 +10,6 @@ from core.drawing import (
     CDR_COLOR_REGISTRATION,
     CDR_COLOR_RGB,
     CDR_GROUP_SHAPE,
-    walk_shapes,
 )
 from core.models import ToolResult
 from tools.document import _scoped_document, _scoped_page
@@ -29,34 +28,48 @@ def _exact_shapes(page, shape_ids: list[str]):
         raise ValueError("Provide one or more unique shape IDs")
     found = {}
     for layer in page.AllLayers:
-        for shape, _ in walk_shapes(layer.Shapes):
-            shape_id = _static_id(shape)
-            if shape_id in requested:
-                if shape_id in found:
-                    raise ValueError(f"Ambiguous shape ID {shape_id}")
-                found[shape_id] = shape
+        # Read IDs in batched queries instead of one COM round trip per object, which
+        # takes minutes on large layers. (Shapes.FindShape also filters on Name, so an
+        # empty name matches only unnamed shapes and it cannot search by ID alone.)
+        anchor, entries = _layer_structure(layer)
+        paths = [path for path, _ in entries]
+        for start in range(0, len(paths), _STRUCTURE_BATCH):
+            chunk = paths[start:start + _STRUCTURE_BATCH]
+            ids = _query(anchor, [f"{_query_path(path)}.StaticID" for path in chunk])
+            for path, value in zip(chunk, ids, strict=True):
+                shape_id = str(value)
+                if shape_id in requested:
+                    if shape_id in found:
+                        raise ValueError(f"Ambiguous shape ID {shape_id}")
+                    found[shape_id] = _resolve_path(layer, path)
     if missing := requested - found.keys():
         raise ValueError(f"Shape IDs not found on requested page: {', '.join(sorted(missing))}")
     return [found[shape_id] for shape_id in shape_ids]
 
 
-def _color_details(color):
-    color_type = color.Type
+def _decode_color(color_type, is_spot, name, tint, components):
+    """Native color identity shared by direct COM reads and batched query reads."""
     if color_type == CDR_COLOR_REGISTRATION:
         return {"kind": "registration", "type": color_type}
-    if color_type == CDR_COLOR_PANTONE or color.IsSpot:
-        return {"kind": "spot", "type": color_type, "name": color.Name}
+    if color_type == CDR_COLOR_PANTONE or is_spot:
+        return {"kind": "spot", "type": color_type, "name": name(), "tint": tint()}
     if color_type == CDR_COLOR_CMYK:
-        return {
-            "kind": "process", "model": "CMYK", "type": color_type,
-            "components": [color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack],
-        }
+        return {"kind": "process", "model": "CMYK", "type": color_type, "components": list(components())}
     if color_type == CDR_COLOR_RGB:
-        return {
-            "kind": "process", "model": "RGB", "type": color_type,
-            "components": [color.RGBRed, color.RGBGreen, color.RGBBlue],
-        }
+        return {"kind": "process", "model": "RGB", "type": color_type, "components": list(components())}
     return {"kind": "unknown", "type": color_type}
+
+
+def _color_details(color):
+    color_type = color.Type
+
+    def components():
+        if color_type == CDR_COLOR_CMYK:
+            return color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack
+        return color.RGBRed, color.RGBGreen, color.RGBBlue
+
+    is_spot = color_type not in (CDR_COLOR_REGISTRATION, CDR_COLOR_PANTONE) and color.IsSpot
+    return _decode_color(color_type, is_spot, lambda: color.Name, lambda: color.Tint, components)
 
 
 def _fill_details(shape):
@@ -84,27 +97,162 @@ def _layer_details(layer, name):
     }
 
 
-def _inspection_entries(layers, offset, end):
-    if offset and len(layers) == 1:
-        layer, name = layers[0]
-        collection = layer.Shapes
-        if collection.FindShapes("", CDR_GROUP_SHAPE, False).Count == 0:
-            # Skip directly to the requested position on a flat layer. A COM
-            # walk of all preceding objects costs more on every successive chunk.
-            size = collection.Count
-            stop = size if end is None else min(end, size)
-            info = _layer_details(layer, name)
-            for index in range(offset + 1, stop + 1):
-                yield collection.Item(index), None, info
-            return
+# Each COM property read crosses into CorelDRAW twice and costs ~1–25 ms on a large
+# drawing. CorelDRAW's query language (Shape.Evaluate) runs many reads in-process and
+# returns them as one array. Paths are relative to an anchor shape on the same layer.
+_QUERY_BATCH = 50
+_STRUCTURE_BATCH = 250
 
-    def entries():
-        for layer, name in layers:
-            info = _layer_details(layer, name)
-            for shape, parent_id in walk_shapes(layer.Shapes):
-                yield shape, parent_id, info
 
-    yield from islice(entries(), offset, end)
+def _query_path(indices):
+    return "@com.Layer.Shapes." + ".Shapes.".join(f"Item({index})" for index in indices)
+
+
+def _query(anchor, expressions):
+    values = anchor.Evaluate("array(" + ", ".join(expressions) + ")")
+    if len(values) != len(expressions):
+        raise RuntimeError("CorelDRAW returned an incomplete query result")
+    return values
+
+
+def _color_query(color):
+    tint = f"iif({color}.Type = {CDR_COLOR_PANTONE} or {color}.IsSpot, {color}.Tint, 0)"
+    cmyk = f"array({color}.CMYKCyan, {color}.CMYKMagenta, {color}.CMYKYellow, {color}.CMYKBlack)"
+    rgb = f"array({color}.RGBRed, {color}.RGBGreen, {color}.RGBBlue)"
+    components = f"iif({color}.Type = {CDR_COLOR_CMYK}, {cmyk}, iif({color}.Type = {CDR_COLOR_RGB}, {rgb}, 0))"
+    return f"array({color}.Type, {color}.IsSpot, {color}.Name, {tint}, {components})"
+
+
+def _decode_queried_color(values):
+    color_type, is_spot, name, tint, components = values
+    return _decode_color(color_type, is_spot, lambda: name, lambda: tint, lambda: components)
+
+
+def _record_query(path, fields):
+    """Return the query expressions for one shape and the field names they answer, in order."""
+    def leaf(expression):
+        # Groups have no fill, outline, or overprint flags of their own.
+        return f"iif({path}.Type = {CDR_GROUP_SHAPE}, 0, {expression})"
+
+    queries = {
+        "name": f"{path}.Name",
+        "z_order": f"{path}.ZOrder",
+        "bounds": f"array({path}.LeftX, {path}.BottomY, {path}.SizeWidth, {path}.SizeHeight)",
+        "effects": f"{path}.Effects.Count",
+        "fill": leaf(f"array({path}.Fill.Type, iif({path}.Fill.Type = {_CDR_UNIFORM_FILL}, "
+                     f"{_color_query(path + '.Fill.UniformColor')}, 0))"),
+        "outline": leaf(f"array({path}.Outline.Type, iif({path}.Outline.Type = {_CDR_NO_OUTLINE}, 0, "
+                        f"array({path}.Outline.Width, {_color_query(path + '.Outline.Color')})))"),
+        "overprint_fill": leaf(f"{path}.OverprintFill"),
+        "overprint_outline": leaf(f"{path}.OverprintOutline"),
+    }
+    names = [name for name in queries if fields is None or name in fields]
+    return [f"{path}.StaticID", f"{path}.Type", *(queries[name] for name in names)], names
+
+
+def _decode_record(values, names, fields):
+    static_id, shape_type, *rest = values
+    record = {"shape_id": str(static_id), "unreadable": {}}
+    if fields is None or "type" in fields:
+        record["type"] = shape_type
+    for name, value in zip(names, rest, strict=True):
+        if shape_type == CDR_GROUP_SHAPE and name in ("fill", "outline", "overprint_fill", "overprint_outline"):
+            continue
+        if name == "bounds":
+            left, bottom, width, height = value
+            value = dict(left=left, bottom=bottom, width=width, height=height)
+        elif name == "fill":
+            fill_type, color = value
+            value = {"type": fill_type}
+            if fill_type == _CDR_UNIFORM_FILL:
+                value["color"] = _decode_queried_color(color)
+            elif fill_type != _CDR_NO_FILL:
+                value["color"] = {"kind": "unknown"}
+        elif name == "outline":
+            outline_type, details = value
+            value = {"type": outline_type}
+            if outline_type != _CDR_NO_OUTLINE:
+                width, color = details
+                value.update(width=width, color=_decode_queried_color(color))
+        elif name in ("overprint_fill", "overprint_outline"):
+            value = bool(value)
+        record[name] = value
+    return record
+
+
+def _layer_structure(layer):
+    """List each shape's index path in walk_shapes order with its parent's path."""
+    if not layer.Shapes.Count:
+        return None, []
+    anchor = layer.Shapes.Item(1)
+
+    def children(prefix):
+        if prefix:
+            count = _query(anchor, [f"{_query_path(prefix)}.Shapes.Count"])[0]
+        else:
+            count = layer.Shapes.Count
+        paths = [(*prefix, index) for index in range(1, count + 1)]
+        kinds = []
+        for start in range(0, len(paths), _STRUCTURE_BATCH):
+            chunk = paths[start:start + _STRUCTURE_BATCH]
+            kinds.extend(_query(anchor, [f"{_query_path(path)}.Type" for path in chunk]))
+        for path, shape_type in zip(paths, kinds, strict=True):
+            yield path, prefix or None
+            if shape_type == CDR_GROUP_SHAPE:
+                yield from children(path)
+
+    return anchor, list(children(()))
+
+
+def _resolve_path(layer, path):
+    shape = layer.Shapes.Item(path[0])
+    for index in path[1:]:
+        shape = shape.Shapes.Item(index)
+    return shape
+
+
+def _query_records(layer, info, anchor, chunk, fields):
+    expressions, sizes, names = [], [], None
+    parents = sorted({parent for _, parent in chunk if parent}, key=len)
+    for path, _ in chunk:
+        queries, names = _record_query(_query_path(path), fields)
+        expressions.extend(queries)
+        sizes.append(len(queries))
+    expressions.extend(f"{_query_path(parent)}.StaticID" for parent in parents)
+    values = _query(anchor, expressions)
+    parent_ids = dict(zip(parents, (str(value) for value in values[sum(sizes):]), strict=True))
+    records, position = [], 0
+    for (path, parent), size in zip(chunk, sizes, strict=True):
+        record = _decode_record(values[position:position + size], names, fields)
+        position += size
+        if record.get("effects"):
+            shape = _resolve_path(layer, path)
+            record["effects"] = [shape.Effects.Item(index).Type for index in range(1, record["effects"] + 1)]
+        elif "effects" in record:
+            record["effects"] = []
+        records.append({"shape_id": record.pop("shape_id"), "parent_id": parent_ids.get(parent), "layer": info, **record})
+    return records
+
+
+def _read_records(layer, info, anchor, entries, fields):
+    """Read inspection records for (path, parent_path) entries in batched queries."""
+    records = []
+    for start in range(0, len(entries), _QUERY_BATCH):
+        chunk = entries[start:start + _QUERY_BATCH]
+        try:
+            records.extend(_query_records(layer, info, anchor, chunk, fields))
+            continue
+        except Exception:
+            pass
+        # One property failed somewhere in the batch. Retry each shape, then use direct
+        # reads, which report each unreadable property instead of failing the inventory.
+        for path, parent in chunk:
+            try:
+                records.extend(_query_records(layer, info, anchor, [(path, parent)], fields))
+            except Exception:
+                parent_id = str(_resolve_path(layer, parent).StaticID) if parent else None
+                records.append(_inspect_shape(_resolve_path(layer, path), parent_id, info, fields))
+    return records
 
 
 def _inspect_shape(shape, parent_id, layer, fields=None):
@@ -169,14 +317,18 @@ def inspect_shapes(
             if len(layers) != 1:
                 raise ValueError(f"Expected one layer named {layer_name!r}; found {len(layers)}")
 
-        end = None if limit is None else offset + limit + 1
+        scoped, anchors = [], []
+        for number, (layer, _) in enumerate(layers):
+            anchor, entries = _layer_structure(layer)
+            anchors.append(anchor)
+            scoped.extend((number, path, parent) for path, parent in entries)
+        end = len(scoped) if limit is None else offset + limit
+        next_offset = end if end < len(scoped) else None
         shapes = []
-        next_offset = None
-        for entry in _inspection_entries(layers, offset, end):
-            if limit is not None and len(shapes) == limit:
-                next_offset = offset + limit
-                break
-            shapes.append(_inspect_shape(*entry, wanted_fields))
+        for number, group in groupby(scoped[offset:end], key=lambda entry: entry[0]):
+            layer, name = layers[number]
+            entries = [(path, parent) for _, path, parent in group]
+            shapes.extend(_read_records(layer, _layer_details(layer, name), anchors[number], entries, wanted_fields))
         return {
             "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
             "document_unit": doc.Unit, "shapes": shapes, "next_offset": next_offset,

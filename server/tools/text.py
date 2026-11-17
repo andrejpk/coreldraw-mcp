@@ -1,9 +1,22 @@
 """文字处理工具 — 替换文字内容、样式设置、溢出检查、创建文本框"""
 
+from itertools import groupby
+
 from core.connection import get_connection
 from core.drawing import CDR_TEXT_SHAPE
 from core.models import ToolResult
-from tools.inspection import _on_shape
+from tools.document import _scoped_page
+from tools.inspection import (
+    _CDR_NO_FILL,
+    _CDR_UNIFORM_FILL,
+    _color_details,
+    _color_query,
+    _decode_queried_color,
+    _exact_shapes,
+    _fill_details,
+    _on_shape,
+    _query,
+)
 
 _CDR_PARAGRAPH_TEXT = 1
 _CDR_MILLIMETER = 3
@@ -89,6 +102,120 @@ def set_text_content_by_id(document_path: str, page_index: int, shape_id: str, c
         return data
 
     return _on_shape(document_path, page_index, shape_id, replace, write=True)
+
+
+_TEXT_QUERY_BATCH = 100
+_MAX_TEXT_CHARACTERS = 5000
+
+
+def _character_fills(story):
+    """Return (text, fill) for every character, using batched queries with a direct-read fallback."""
+    count = story.Characters.Count
+    if count > _MAX_TEXT_CHARACTERS:
+        raise ValueError(f"Text has {count} characters; the limit is {_MAX_TEXT_CHARACTERS}")
+    characters = []
+    for start in range(1, count + 1, _TEXT_QUERY_BATCH):
+        indices = range(start, min(count, start + _TEXT_QUERY_BATCH - 1) + 1)
+        try:
+            expressions = []
+            for index in indices:
+                path = f"@com.Characters.Item({index})"
+                expressions += [f"{path}.Text", f"array({path}.Fill.Type, iif({path}.Fill.Type = {_CDR_UNIFORM_FILL}, "
+                                f"{_color_query(path + '.Fill.UniformColor')}, 0))"]
+            values = _query(story, expressions)
+            for text, (fill_type, color) in zip(values[::2], values[1::2], strict=True):
+                fill = {"type": fill_type}
+                if fill_type == _CDR_UNIFORM_FILL:
+                    fill["color"] = _decode_queried_color(color)
+                elif fill_type != _CDR_NO_FILL:
+                    fill["color"] = {"kind": "unknown"}
+                characters.append((text, fill))
+        except Exception:
+            for index in indices:
+                character = story.Characters.Item(index)
+                characters.append((character.Text, _fill_details(character)))
+    return characters
+
+
+def _fill_runs(characters):
+    # Positions count CorelDRAW characters, which Story.Range uses, not Python code points.
+    runs, position = [], 0
+    for fill, group in groupby(characters, key=lambda character: character[1]):
+        texts = [text for text, _ in group]
+        text = "".join(texts)
+        runs.append({"start": position, "end": position + len(texts), "text": text,
+                     "whitespace_only": text.isspace(), "fill": fill})
+        position += len(texts)
+    return runs
+
+
+def _text_story(shape):
+    if shape.Type != CDR_TEXT_SHAPE:
+        raise ValueError("The specified shape is not editable text")
+    return shape.Text.Story
+
+
+def inspect_text_fill_runs(document_path: str, page_index: int, shape_id: str) -> ToolResult:
+    """List the character fill runs of one exact text shape, including whitespace.
+
+    Each run is a zero-based, end-exclusive character range [start, end) sharing one native fill
+    (spot name and tint, process components, registration, none, or unknown). The shape-level
+    fill reports only part of mixed text, so check these runs before copying fills or separating.
+    """
+    def inspect(app, doc, shape):
+        characters = _character_fills(_text_story(shape))
+        return {"text": "".join(text for text, _ in characters), "runs": _fill_runs(characters)}
+
+    return _on_shape(document_path, page_index, shape_id, inspect)
+
+
+def copy_fill_to_text_range(
+    document_path: str, page_index: int, shape_id: str, start: int, end: int, source_shape_id: str,
+) -> ToolResult:
+    """Apply the uniform fill of an exact donor shape to characters [start, end) of an exact text shape.
+
+    Indices are zero-based and end-exclusive, as returned by inspect_text_fill_runs; whitespace
+    counts. Verifies that the text is unchanged, every character in the range has the donor's
+    native color (including spot tint), and characters outside the range keep their fills.
+    The edit is one undo step. Returns the resulting runs.
+    """
+    if start < 0 or end <= start:
+        return ToolResult.fail("Specify 0 <= start < end")
+
+    def copy(app, doc, shape):
+        story = _text_story(shape)
+        before = _character_fills(story)
+        if end > len(before):
+            raise ValueError(f"The text has {len(before)} characters; end must not exceed it")
+        if any(fill["type"] not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL) for _, fill in before[start:end]):
+            raise ValueError("Characters in the range must have no fill or a uniform fill")
+        donor, = _exact_shapes(_scoped_page(doc, page_index), [source_shape_id])
+        if donor.Fill.Type != _CDR_UNIFORM_FILL:
+            raise ValueError("The donor must have a uniform fill")
+        color = donor.Fill.UniformColor.GetCopy()
+        expected = {"type": _CDR_UNIFORM_FILL, "color": _color_details(color)}
+        doc.BeginCommandGroup("Copy fill to text range")
+        try:
+            story.Range(start, end).Fill.ApplyUniformFill(color)
+        finally:
+            doc.EndCommandGroup()
+        after = _character_fills(story)
+        data = {
+            "source_shape_id": source_shape_id, "start": start, "end": end,
+            "source_fill": expected, "runs": _fill_runs(after),
+        }
+        problems = []
+        if [text for text, _ in after] != [text for text, _ in before]:
+            problems.append("the text changed")
+        if any(fill != expected for _, fill in after[start:end]):
+            problems.append("a character in the range has a different fill")
+        if after[:start] != before[:start] or after[end:] != before[end:]:
+            problems.append("a character outside the range changed")
+        if problems:
+            data["verification_error"] = f"Fill copy verification failed: {'; '.join(problems)}. Undo the last step."
+        return data
+
+    return _on_shape(document_path, page_index, shape_id, copy, write=True)
 
 
 def _set_text_font(text, font: str) -> None:
