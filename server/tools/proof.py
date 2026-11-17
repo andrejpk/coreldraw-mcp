@@ -179,10 +179,12 @@ def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str,
     """Publish a proof PDF of one page containing only one named page layer, with native spots and overprints.
 
     layer_name must match exactly one ordinary layer local to the page. Every other layer on the
-    page, including shared master layers, is made non-printing only while publishing. Printability,
-    not visibility, controls Publish to PDF, so a hidden target layer is still included. Afterward the
-    tool restores and verifies each layer's printability, the PDF settings, the active page, the
-    document unit, and the unsaved-changes flag, after success or failure. No print job is sent.
+    page, including shared master layers, is made non-printing only while publishing. Printability
+    decides which layers are published. A hidden layer is published as a PDF layer that is off by
+    default, which renderers show as blank, so a hidden target is made visible while publishing.
+    Afterward the tool restores and verifies each layer's printability and visibility, the PDF
+    settings, the active page, the document unit, and the unsaved-changes flag, after success or
+    failure. No print job is sent.
     """
     conn = get_connection()
     try:
@@ -199,36 +201,38 @@ def export_layer_proof_pdf(document_path: str, page_index: int, layer_name: str,
         if len(targets) != 1:
             raise ValueError(f"Expected one page layer named {layer_name!r}; found {len(targets)}")
         target = targets[0]
-        original = [(layer, bool(layer.Printable)) for layer in layers]
+        # (layer, property, original value, value while publishing)
+        flags = [(layer, "Printable", bool(layer.Printable), layer is target) for layer in layers]
+        target_visible = bool(target.Visible)
+        flags.append((target, "Visible", target_visible, True))
         state = (doc.Dirty, doc.ActivePage.Index, doc.Unit)
-        excluded = [_layer_label(layer) for layer, printable in original
-                    if printable and layer is not target and layer.Shapes.Count]
+        excluded = [_layer_label(layer) for layer, name, value, _ in flags
+                    if name == "Printable" and value and layer is not target and layer.Shapes.Count]
         try:
-            for layer, printable in original:
-                wanted = layer is target
-                if printable != wanted:
-                    layer.Printable = wanted
-                if bool(layer.Printable) != wanted:
-                    raise RuntimeError(f"CorelDRAW did not change printability of layer {_layer_label(layer)}")
+            for layer, name, value, wanted in flags:
+                if value != wanted:
+                    setattr(layer, name, wanted)
+                if bool(getattr(layer, name)) != wanted:
+                    raise RuntimeError(f"CorelDRAW did not change {name} of layer {_layer_label(layer)}")
             size = _publish_page(doc, page_index, destination)
         finally:
             failed = []
-            for layer, printable in original:
+            for layer, name, value, _ in flags:
                 try:
-                    if bool(layer.Printable) != printable:
-                        layer.Printable = printable
-                    if bool(layer.Printable) != printable:
-                        failed.append(_layer_label(layer))
+                    if bool(getattr(layer, name)) != value:
+                        setattr(layer, name, value)
+                    if bool(getattr(layer, name)) != value:
+                        failed.append(f"{_layer_label(layer)} {name}")
                 except Exception:
-                    failed.append(_layer_label(layer))
+                    failed.append(f"{_layer_label(layer)} {name}")
             doc.Dirty = state[0]
             if failed:
-                raise RuntimeError(f"Failed to restore layer printability: {', '.join(failed)}")
+                raise RuntimeError(f"Failed to restore layer flags: {', '.join(failed)}")
             if (doc.Dirty, doc.ActivePage.Index, doc.Unit) != state:
                 raise RuntimeError("The unsaved-changes flag, active page, or document unit changed")
         return {
             "document_path": actual_path, "page_index": page_index, "layer_name": layer_name,
-            "layer_visible": bool(target.Visible), "layer_shape_count": target.Shapes.Count,
+            "layer_visible": target_visible, "layer_shape_count": target.Shapes.Count,
             "excluded_printable_layers": excluded, "output_path": str(destination), "bytes": size,
             "proof_source": "CorelDRAW Publish to PDF",
         }

@@ -27,4 +27,4 @@
 - [2026-11-17] The bridge cancels any single COM operation after 60 s; chunk long work. — `core/connection.py` `_call` timeout
 - [2026-11-17] Dynamic COM reads cost two round trips each (1–25 ms on large docs); batch reads through `Shape.Evaluate("array(@com...)")`. — profiled 4,452-object layer
 - [2026-11-17] `Shapes.FindShape` treats Name as a filter ("" matches only unnamed shapes); it cannot look up by StaticID alone. — fixture test
-- [2026-11-17] Publish to PDF follows layer Printable, not Visible; changing Printable sets Document.Dirty. — fixture test
+- [2026-11-17] Publish to PDF includes layers by Printable (sets Document.Dirty); a hidden layer becomes a PDF layer that is off by default and renders blank. — Ghostscript fixture test
