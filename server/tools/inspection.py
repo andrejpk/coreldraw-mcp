@@ -1,6 +1,6 @@
 """Inspect drawing objects and bridge exact IDs to CorelDRAW UI selection."""
 
-from itertools import islice
+from itertools import groupby
 from typing import Literal
 
 from core.connection import get_connection
@@ -9,12 +9,22 @@ from core.drawing import (
     CDR_COLOR_PANTONE,
     CDR_COLOR_REGISTRATION,
     CDR_COLOR_RGB,
-    CDR_GROUP_SHAPE,
-    walk_shapes,
 )
 from core.models import ToolResult
-from tools.document import _scoped_document, _scoped_page
-from tools.shapes import _create_shape_range, _static_id
+from core.results import respond
+from core.structure import (
+    CONTAINER_TYPES,
+    EFFECT_GROUP_TYPES,
+    StaleStructureError,
+    evaluate,
+    page_layers,
+    query_path,
+    read_entries,
+    resolve_path,
+    resolve_shapes,
+)
+from core.targets import resolve_document, resolve_page
+from core.units import unit_name
 
 _CDR_NO_FILL = 0
 _CDR_UNIFORM_FILL = 1
@@ -23,40 +33,38 @@ InspectionField = Literal["name", "type", "z_order", "bounds", "effects", "fill"
                           "overprint_fill", "overprint_outline"]
 
 
-def _exact_shapes(page, shape_ids: list[str]):
-    requested = set(shape_ids)
-    if not requested or len(requested) != len(shape_ids):
-        raise ValueError("Provide one or more unique shape IDs")
-    found = {}
-    for layer in page.AllLayers:
-        for shape, _ in walk_shapes(layer.Shapes):
-            shape_id = _static_id(shape)
-            if shape_id in requested:
-                if shape_id in found:
-                    raise ValueError(f"Ambiguous shape ID {shape_id}")
-                found[shape_id] = shape
-    if missing := requested - found.keys():
-        raise ValueError(f"Shape IDs not found on requested page: {', '.join(sorted(missing))}")
-    return [found[shape_id] for shape_id in shape_ids]
+def _static_id(shape) -> str:
+    return str(shape.StaticID)
+
+
+def _exact_shapes(doc, page, shape_ids: list[str]):
+    """COM shapes for exact StaticIDs on the page's layers, through the page structure cache (core.structure)."""
+    return resolve_shapes(doc, page, shape_ids)
+
+
+def _decode_color(color_type, is_spot, name, tint, components):
+    """Native color identity shared by direct COM reads and batched query reads."""
+    if color_type == CDR_COLOR_REGISTRATION:
+        return {"kind": "registration", "type": color_type}
+    if color_type == CDR_COLOR_PANTONE or is_spot:
+        return {"kind": "spot", "type": color_type, "name": name(), "tint": tint()}
+    if color_type == CDR_COLOR_CMYK:
+        return {"kind": "process", "model": "CMYK", "type": color_type, "components": list(components())}
+    if color_type == CDR_COLOR_RGB:
+        return {"kind": "process", "model": "RGB", "type": color_type, "components": list(components())}
+    return {"kind": "unknown", "type": color_type}
 
 
 def _color_details(color):
     color_type = color.Type
-    if color_type == CDR_COLOR_REGISTRATION:
-        return {"kind": "registration", "type": color_type}
-    if color_type == CDR_COLOR_PANTONE or color.IsSpot:
-        return {"kind": "spot", "type": color_type, "name": color.Name}
-    if color_type == CDR_COLOR_CMYK:
-        return {
-            "kind": "process", "model": "CMYK", "type": color_type,
-            "components": [color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack],
-        }
-    if color_type == CDR_COLOR_RGB:
-        return {
-            "kind": "process", "model": "RGB", "type": color_type,
-            "components": [color.RGBRed, color.RGBGreen, color.RGBBlue],
-        }
-    return {"kind": "unknown", "type": color_type}
+
+    def components():
+        if color_type == CDR_COLOR_CMYK:
+            return color.CMYKCyan, color.CMYKMagenta, color.CMYKYellow, color.CMYKBlack
+        return color.RGBRed, color.RGBGreen, color.RGBBlue
+
+    is_spot = color_type not in (CDR_COLOR_REGISTRATION, CDR_COLOR_PANTONE) and color.IsSpot
+    return _decode_color(color_type, is_spot, lambda: color.Name, lambda: color.Tint, components)
 
 
 def _fill_details(shape):
@@ -84,30 +92,180 @@ def _layer_details(layer, name):
     }
 
 
-def _inspection_entries(layers, offset, end):
-    if offset and len(layers) == 1:
-        layer, name = layers[0]
-        collection = layer.Shapes
-        if collection.FindShapes("", CDR_GROUP_SHAPE, False).Count == 0:
-            # Skip directly to the requested position on a flat layer. A COM
-            # walk of all preceding objects costs more on every successive chunk.
-            size = collection.Count
-            stop = size if end is None else min(end, size)
-            info = _layer_details(layer, name)
-            for index in range(offset + 1, stop + 1):
-                yield collection.Item(index), None, info
-            return
-
-    def entries():
-        for layer, name in layers:
-            info = _layer_details(layer, name)
-            for shape, parent_id in walk_shapes(layer.Shapes):
-                yield shape, parent_id, info
-
-    yield from islice(entries(), offset, end)
+# Each COM property read crosses into CorelDRAW twice and costs ~1–25 ms on a large
+# drawing. CorelDRAW's query language (Shape.Evaluate) runs many reads in-process and
+# returns them as one array. Paths are relative to an anchor shape on the same layer.
+_STRUCTURE_BATCH = 250
+_CHUNK = 250  # shapes read per batch; inspect_shapes checks its time budget between batches
+_RESERVE_SECONDS = 20.0  # stop a long inventory this long before the bridge time limit and return next_offset
+_query_path = query_path
+_query = evaluate
 
 
-def _inspect_shape(shape, parent_id, layer, fields=None):
+def _color_query(color):
+    tint = f"iif({color}.Type = {CDR_COLOR_PANTONE} or {color}.IsSpot, {color}.Tint, 0)"
+    cmyk = f"array({color}.CMYKCyan, {color}.CMYKMagenta, {color}.CMYKYellow, {color}.CMYKBlack)"
+    rgb = f"array({color}.RGBRed, {color}.RGBGreen, {color}.RGBBlue)"
+    components = f"iif({color}.Type = {CDR_COLOR_CMYK}, {cmyk}, iif({color}.Type = {CDR_COLOR_RGB}, {rgb}, 0))"
+    return f"array({color}.Type, {color}.IsSpot, {color}.Name, {tint}, {components})"
+
+
+def _decode_queried_color(values):
+    color_type, is_spot, name, tint, components = values
+    return _decode_color(color_type, is_spot, lambda: name, lambda: tint, lambda: components)
+
+
+def _is_container(path):
+    return " or ".join(f"{path}.Type = {kind}" for kind in sorted(CONTAINER_TYPES))
+
+
+def _record_query(path, fields):
+    """Return the query expressions for one shape and the field names they answer, in order."""
+    def leaf(expression):
+        # Groups and effect groups have no fill, outline, or overprint flags of their own.
+        return f"iif({_is_container(path)}, 0, {expression})"
+
+    queries = {
+        "name": f"{path}.Name",
+        "z_order": f"{path}.ZOrder",
+        "bounds": f"array({path}.LeftX, {path}.BottomY, {path}.SizeWidth, {path}.SizeHeight)",
+        "effects": f"{path}.Effects.Count",
+        "fill": leaf(f"array({path}.Fill.Type, iif({path}.Fill.Type = {_CDR_UNIFORM_FILL}, "
+                     f"{_color_query(path + '.Fill.UniformColor')}, 0))"),
+        "outline": leaf(f"array({path}.Outline.Type, iif({path}.Outline.Type = {_CDR_NO_OUTLINE}, 0, "
+                        f"array({path}.Outline.Width, {_color_query(path + '.Outline.Color')})))"),
+        "overprint_fill": leaf(f"{path}.OverprintFill"),
+        "overprint_outline": leaf(f"{path}.OverprintOutline"),
+    }
+    names = [name for name in queries if fields is None or name in fields]
+    return [f"{path}.StaticID", f"{path}.Type", *(queries[name] for name in names)], names
+
+
+def _decode_record(values, names, fields):
+    static_id, shape_type, *rest = values
+    record = {"shape_id": str(static_id), "unreadable": {}}
+    if fields is None or "type" in fields:
+        record["type"] = shape_type
+    for name, value in zip(names, rest, strict=True):
+        if shape_type in CONTAINER_TYPES and name in ("fill", "outline", "overprint_fill", "overprint_outline"):
+            continue
+        if name == "bounds":
+            left, bottom, width, height = value
+            value = dict(left=left, bottom=bottom, width=width, height=height)
+        elif name == "fill":
+            fill_type, color = value
+            value = {"type": fill_type}
+            if fill_type == _CDR_UNIFORM_FILL:
+                value["color"] = _decode_queried_color(color)
+            elif fill_type != _CDR_NO_FILL:
+                value["color"] = {"kind": "unknown"}
+        elif name == "outline":
+            outline_type, details = value
+            value = {"type": outline_type}
+            if outline_type != _CDR_NO_OUTLINE:
+                width, color = details
+                value.update(width=width, color=_decode_queried_color(color))
+        elif name in ("overprint_fill", "overprint_outline"):
+            value = bool(value)
+        record[name] = value
+    return record
+
+
+def _effect_details(shape, unit):
+    from tools.effects import effect_details
+
+    return effect_details(shape, unit)
+
+
+def _query_records(view, info, entries, fields, unit=None):
+    """Inspection records for structure entries of one layer, in one batched query (IDs verified)."""
+    queries, names = _record_query("$item", fields)
+    rows = read_entries(view, entries, queries[1:])
+    records = []
+    for entry, row in zip(entries, rows, strict=True):
+        record = _decode_record((entry.shape_id, *row), names, fields)
+        if record.get("effects"):
+            shape = resolve_path(view.layer, entry.path)
+            record["effects"] = [shape.Effects.Item(index).Type for index in range(1, record["effects"] + 1)]
+            if unit is not None:
+                record["effect_details"] = _effect_details(shape, unit)
+        elif "effects" in record:
+            record["effects"] = []
+        records.append({"shape_id": record.pop("shape_id"), "parent_id": entry.parent_id, "layer": info,
+                        **_placement(entry), **record})
+    return records
+
+
+def _placement(entry):
+    """PowerClip and effect membership of a structure entry (keys present only when they apply)."""
+    placement = {}
+    if entry.clip is not None:
+        placement.update(in_powerclip=True, powerclip_container_id=entry.clip)
+    if entry.effect is not None:
+        placement["effect_group_id"] = entry.effect
+    return placement
+
+
+_EFFECT_GROUP_IDS = {
+    5: "$item.DropShadow.ShadowGroup.StaticID",  # cdrDropShadow
+    6: "$item.Contour.ContourGroup.StaticID",  # cdrContour
+}
+_MAX_EFFECTS = 8
+
+
+def effect_controls(view) -> dict[str, str]:
+    """Map each contour and drop-shadow group on one layer to the StaticID of the shape that controls it.
+
+    Reads the effect count of every ordinary shape on the layer, so call it only when the layer has effect groups.
+    Other effect groups (blend, extrude, bevel) are not linked.
+    """
+    entries = [entry for entry in view.structure.entries if entry.type not in CONTAINER_TYPES]
+    counts = read_entries(view, entries, ["$item.Effects.Count"]) if entries else []
+    controls = {}
+    for entry, (count,) in zip(entries, counts, strict=True):
+        if not count:
+            continue
+        group = " ".join(f"iif($item.Type = {kind}, {expression}, " for kind, expression in _EFFECT_GROUP_IDS.items())
+        group += "0" + ")" * len(_EFFECT_GROUP_IDS)
+        items = ", ".join(f"$item.Effects.Item({index})" for index in range(1, min(count, _MAX_EFFECTS) + 1))
+        for value in read_entries(view, [entry], [f"array({items}).convert({group})"])[0][0]:
+            if value:
+                controls[str(value)] = entry.shape_id
+    return controls
+
+
+def _read_records(view, info, entries, fields, unit=None):
+    """Read inspection records for structure entries of one layer in batched queries."""
+    try:
+        return _query_records(view, info, entries, fields, unit)
+    except StaleStructureError:
+        raise
+    except Exception:
+        # One property failed somewhere in the batch. Retry each shape, then use direct
+        # reads, which report each unreadable property instead of failing the inventory.
+        return _read_records_one_by_one(view, info, entries, fields, unit)
+
+
+def _read_records_one_by_one(view, info, entries, fields, unit):
+    records = []
+    for entry in entries:
+        try:
+            records.extend(_query_records(view, info, [entry], fields, unit))
+        except StaleStructureError:
+            raise
+        except Exception:
+            try:
+                shape = resolve_path(view.layer, entry.path)
+                same = str(shape.StaticID) == entry.shape_id
+            except Exception:
+                same = False
+            if not same:
+                raise StaleStructureError(f"Shape {entry.shape_id} is no longer at its cached position") from None
+            records.append(_inspect_shape(shape, entry.parent_id, info, fields, unit))
+    return records
+
+
+def _inspect_shape(shape, parent_id, layer, fields=None, unit=None):
     info = {"shape_id": _static_id(shape), "parent_id": parent_id, "layer": layer, "unreadable": {}}
     shape_type = shape.Type
     readers = {
@@ -117,7 +275,7 @@ def _inspect_shape(shape, parent_id, layer, fields=None):
         "bounds": lambda: dict(left=shape.LeftX, bottom=shape.BottomY, width=shape.SizeWidth, height=shape.SizeHeight),
         "effects": lambda: [effect.Type for effect in shape.Effects],
     }
-    if shape_type != CDR_GROUP_SHAPE:
+    if shape_type not in CONTAINER_TYPES:
         readers.update(
             fill=lambda: _fill_details(shape),
             outline=lambda: _outline_details(shape),
@@ -131,6 +289,11 @@ def _inspect_shape(shape, parent_id, layer, fields=None):
             info[name] = read()
         except Exception as exc:
             info["unreadable"][name] = str(exc)
+    if info.get("effects") and unit is not None:
+        try:
+            info["effect_details"] = _effect_details(shape, unit)
+        except Exception as exc:
+            info["unreadable"]["effect_details"] = str(exc)
     return info
 
 
@@ -142,84 +305,86 @@ def inspect_shapes(
     limit: int | None = None,
     fields: list[InspectionField] | None = None,
 ) -> ToolResult:
-    """Inspect a saved active document's one-based page and shared layers without changing the UI.
+    """List every object of one page, with its master layers, in stacking order. Read-only.
 
-    Returns exact IDs, nested group ancestry, order, bounds in document units, effects,
-    uniform fill and outline colors, overprint flags, and layer visibility/printability.
-    Unknown color types and unreadable fields require further inspection. This is an
-    artwork inventory. CorelDRAW's print preview determines actual separation output.
-
-    Use an exact layer_name to limit the scan, or pass limit (1–250) and follow
-    next_offset until null. Offset is zero-based within the selected scope. Keep the
-    document unchanged across calls. Omit limit for the original full inventory.
-    Pass fields to request only the named details (e.g. type, fill, outline); IDs,
-    ancestry and layer information are always returned.
+    Per object: shape_id, group ancestry, bounds (document_unit), type, effects (effect_details; contours with
+    direction, offset, steps, corner, fill_color), uniform fill and outline colors, overprint flags, and its
+    layer's flags. PowerClip contents follow their container (in_powerclip, powerclip_container_id);
+    effect-generated objects name their effect group (effect_group_id), which names its control shape
+    (effect_control_id); unreadable fields are listed. fields limits the details (e.g. ["type", "fill"]).
+    layer_name limits the scan to one layer. Page through with limit (1-250) and offset: always continue until
+    next_offset is null (a large page may stop early to stay within the time limit). For ink totals, plates
+    and text runs use get_ink_inventory; to search by criteria use find_shapes.
     """
     if offset < 0 or (limit is not None and not 1 <= limit <= 250):
         return ToolResult.fail("Offset must be nonnegative and limit must be between 1 and 250")
     conn = get_connection()
     wanted_fields = None if fields is None else set(fields)
 
-    def inspect():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
-        layers = [(layer, layer.Name) for layer in page.AllLayers]
-        if layer_name is not None:
-            layers = [(layer, name) for layer, name in layers if name == layer_name]
-            if len(layers) != 1:
-                raise ValueError(f"Expected one layer named {layer_name!r}; found {len(layers)}")
+    def inventory(doc, page, fresh):
+        # Structures are cached between calls (core.structure) and validated on every call.
+        views = page_layers(doc, page, layer_name, fresh=fresh)
+        if layer_name is not None and len(views) != 1:
+            raise ValueError(f"Expected one layer named {layer_name!r}; found {len(views)}")
+        scoped = [(number, entry) for number, view in enumerate(views) for entry in view.structure.entries]
+        end = len(scoped) if limit is None else min(len(scoped), offset + limit)
+        shapes, position, infos, controls = [], offset, {}, {}
+        while position < end:
+            if shapes and conn.time_left() < _RESERVE_SECONDS:
+                break  # return what is read; the caller continues from next_offset
+            stop = min(end, position + _CHUNK)
+            for number, group in groupby(scoped[position:stop], key=lambda item: item[0]):
+                view = views[number]
+                if number not in infos:
+                    infos[number] = view.details()
+                records = _read_records(view, infos[number], [entry for _, entry in group], wanted_fields, doc.Unit)
+                if any(record.get("type") in EFFECT_GROUP_TYPES for record in records):
+                    if number not in controls:
+                        controls[number] = effect_controls(view)
+                    for record in records:
+                        if record["shape_id"] in controls[number]:
+                            record["effect_control_id"] = controls[number][record["shape_id"]]
+                shapes.extend(records)
+            position = stop
+        return shapes, position if position < len(scoped) else None
 
-        end = None if limit is None else offset + limit + 1
-        shapes = []
-        next_offset = None
-        for entry in _inspection_entries(layers, offset, end):
-            if limit is not None and len(shapes) == limit:
-                next_offset = offset + limit
+    def inspect():
+        doc, actual_path = resolve_document(conn.app, document_path)
+        page = resolve_page(doc, page_index)
+        for fresh in (False, True):
+            try:
+                shapes, next_offset = inventory(doc, page, fresh)
                 break
-            shapes.append(_inspect_shape(*entry, wanted_fields))
+            except StaleStructureError:
+                continue
+        else:
+            raise RuntimeError("The page changed while it was being read; retry when it is not being edited")
         return {
             "document_path": actual_path, "page_index": page_index, "page_name": page.Name,
-            "document_unit": doc.Unit, "shapes": shapes, "next_offset": next_offset,
+            "document_unit": unit_name(doc.Unit), "shapes": shapes, "next_offset": next_offset,
         }
 
-    result = conn.safe_call(inspect)
-    if result["success"]:
-        return ToolResult.ok(**result["result"])
-    return ToolResult.fail(result["error"])
+    return respond(conn.read_call(inspect), document_path=document_path, page_index=page_index)
 
 
-def _selection(document_path: str, page_index: int, shape_ids: list[str] | None = None) -> ToolResult:
+def get_ui_selection(document_path: str, page_index: int) -> ToolResult:
+    """Read the shape IDs selected in CorelDRAW's window; page_index must be the document's active page.
+
+    To change the selection use find_shapes(select=True), e.g. with filters {"ids": [...]}.
+    """
     conn = get_connection()
 
-    def select():
-        doc, actual_path = _scoped_document(conn.app, document_path)
+    def read():
+        doc, actual_path = resolve_document(conn.app, document_path)
         if doc.ActivePage.Index != page_index:
-            raise ValueError(f"Page {page_index} must be active to use its UI selection")
-        if shape_ids is not None:
-            _create_shape_range(_exact_shapes(doc.ActivePage, shape_ids)).CreateSelection()
+            raise ValueError(f"Page {page_index} must be the document's active page (edit_pages action=activate)")
         selection = doc.SelectionRange
         return {
             "document_path": actual_path, "page_index": page_index,
             "shape_ids": [_static_id(selection.Item(i)) for i in range(1, selection.Count + 1)],
         }
 
-    result = conn.safe_call(select)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if shape_ids is not None and set(data["shape_ids"]) != set(shape_ids):
-        return ToolResult(success=False, error="CorelDRAW selected a different set of shapes", data=data)
-    return ToolResult.ok(**data)
-
-
-def get_ui_selection(document_path: str, page_index: int) -> ToolResult:
-    """Read exact shape IDs in the UI selection of the specified active document and one-based page."""
-    return _selection(document_path, page_index)
-
-
-def select_shapes_by_id(document_path: str, page_index: int, shape_ids: list[str]) -> ToolResult:
-    """Replace the UI selection on the specified active document and page with one or more exact StaticIDs."""
-    return _selection(document_path, page_index, shape_ids)
+    return respond(conn.read_call(read), document_path=document_path, page_index=page_index)
 
 
 def _on_shape(document_path, page_index, shape_id, action, *, write=False) -> ToolResult:
@@ -239,9 +404,10 @@ def _on_shapes(document_path, page_index, shape_ids, action, *, write=False) -> 
     conn = get_connection()
 
     def run():
-        doc, actual_path = _scoped_document(conn.app, document_path)
-        page = _scoped_page(doc, page_index)
-        shapes = _exact_shapes(page, shape_ids)
+        # Edits activate the document: Undo and command groups follow the active document.
+        doc, actual_path = resolve_document(conn.app, document_path, activate=write)
+        page = resolve_page(doc, page_index)
+        shapes = _exact_shapes(doc, page, shape_ids)
         if write:
             for shape in shapes:
                 _require_editable(shape, page_index)
@@ -251,10 +417,5 @@ def _on_shapes(document_path, page_index, shape_ids, action, *, write=False) -> 
         }
 
     # A failed readback after a COM mutation leaves its outcome uncertain.
-    result = conn.safe_call(run)
-    if not result["success"]:
-        return ToolResult.fail(result["error"])
-    data = result["result"]
-    if error := data.pop("verification_error", None):
-        return ToolResult(success=False, error=error, data=data)
-    return ToolResult.ok(**data)
+    result = conn.safe_call(run) if write else conn.read_call(run)
+    return respond(result, document_path=document_path, page_index=page_index)

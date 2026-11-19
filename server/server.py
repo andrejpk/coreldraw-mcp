@@ -6,16 +6,63 @@ from pathlib import Path
 
 from core.connection import close_connection, get_connection
 from core.models import ToolResult
+from core.results import CorelTool
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from fastmcp.tools import Tool
 from loguru import logger
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 _ROOT = Path(__file__).resolve().parent.parent
 _HTTP_OPTIONS = {"path": "/mcp", "stateless_http": True, "json_response": True, "host_origin_protection": True}
-mcp = FastMCP("coreldraw-signage")
+INSTRUCTIONS = """CorelDRAW automation. Conventions shared by every tool:
+- document_path: an open document's full path as list_documents reports it (an unsaved document's title).
+  Reads work on any open document; edits activate their document, because CorelDRAW undoes the active one.
+- page_index and pages are one-based. shape_ids are StaticID strings of that page, from inspect_shapes or
+  find_shapes.
+- unit: "in", "mm", "cm" or "pt". Results report lengths in document_unit unless they name a unit. Bounds are
+  [left, bottom, right, top] in page coordinates, y up.
+- Colors are color specs, documented on set_fill.
+- Edit tools are one undo step (undo reverts it) and read their result back. They refuse the whole call,
+  changing nothing, for locked or master layers, effect-generated objects and other unsupported targets, and
+  list each target in data.refused.
+- Every tool returns {success, message, data, error}. A failed call's error says what to do next, and
+  data.state tells CorelDRAW problems (busy or timeout: retry or poll get_coreldraw_status; disconnected,
+  not_running, unavailable) from a request to fix (tool_error).
+"""
+mcp = FastMCP("coreldraw-signage", instructions=INSTRUCTIONS)
+
+# Tool annotations (MCP hints; the defaults are read-write, destructive, not idempotent).
+READ = {"readOnlyHint": True}
+ADDS = {"destructiveHint": False}
+ADDS_SAME = {"destructiveHint": False, "idempotentHint": True}
+SETS = {"idempotentHint": True}
+
+
+def _lean_schema(schema: dict) -> dict:
+    """Drop the null branch and null default of optional parameters: omitting one means the same thing.
+
+    Arguments are still validated against the function signature, so an explicit null keeps working.
+    """
+    for prop in schema.get("properties", {}).values():
+        branches = prop.get("anyOf")
+        if branches and {"type": "null"} in branches and "default" in prop and prop["default"] is None:
+            rest = [branch for branch in branches if branch != {"type": "null"}]
+            del prop["anyOf"], prop["default"]
+            if len(rest) == 1:
+                prop.update(rest[0])
+            else:
+                prop["anyOf"] = rest
+    return schema
+
+
+def add(fn, hints=None):
+    """Register a tool function: docstring as description, no output schema (every tool returns the same
+    ToolResult object, still sent as structured content; a failure has isError true), lean input schema, MCP
+    annotations."""
+    tool = CorelTool.from_function(fn, output_schema=None, annotations=hints)
+    tool.parameters = _lean_schema(tool.parameters)
+    mcp.add_tool(tool)
 
 
 def setup_logging(*, http):
@@ -27,11 +74,18 @@ def setup_logging(*, http):
 
 
 def get_coreldraw_status() -> ToolResult:
-    """Check whether the running CorelDRAW instance responds to COM without opening or changing artwork."""
+    """Check that CorelDRAW responds, without touching any document. Returns state "ready" and the version.
+
+    While another tool runs: state "busy" and running (operation, seconds, read_only, time_limit_seconds,
+    timed_out, interrupting).
+    """
     status = get_connection().probe()
     if status["success"]:
         return ToolResult.ok(state="ready", version=status["version"])
-    return ToolResult(success=False, error=status["error"], data={"state": status["state"]})
+    data = {"state": status["state"]}
+    if status.get("running"):
+        data["running"] = status["running"]
+    return ToolResult(success=False, error=status["error"], data=data)
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
@@ -53,121 +107,90 @@ def register_tools():
         effects,
         engineering,
         export,
+        find,
         geometry,
+        inks,
         inspection,
         layers,
+        plates,
         preflight,
         proof,
+        recolor,
         shapes,
+        silhouette,
         templates,
         text,
     )
 
-    mcp.add_tool(Tool.from_function(get_coreldraw_status, annotations={"readOnlyHint": True}))
-    mcp.add_tool(document.open_template)
-    mcp.add_tool(document.create_document)
-    mcp.add_tool(document.save_document)
-    mcp.add_tool(document.close_document)
-    mcp.add_tool(document.add_page)
-    mcp.add_tool(document.set_page_size)
-    mcp.add_tool(document.get_document_info)
-    mcp.add_tool(document.list_all_text_shapes)
-    mcp.add_tool(document.add_guideline)
-    mcp.add_tool(document.switch_page)
-    mcp.add_tool(document.delete_page)
+    add(get_coreldraw_status, READ)
+    add(document.list_documents, READ)
+    add(document.open_document, ADDS_SAME)
+    add(document.create_document, ADDS)
+    add(document.save_document, SETS)
+    add(document.close_document)
+    add(document.edit_pages)
+    add(document.add_guideline, ADDS)
 
-    mcp.add_tool(shapes.create_rectangle)
-    mcp.add_tool(shapes.create_ellipse)
-    mcp.add_tool(shapes.create_line)
-    mcp.add_tool(shapes.import_svg)
-    mcp.add_tool(shapes.import_image)
-    mcp.add_tool(shapes.set_shape_size)
-    mcp.add_tool(shapes.set_shape_position)
-    mcp.add_tool(shapes.boolean_operation)
-    mcp.add_tool(shapes.convert_to_curves)
-    mcp.add_tool(shapes.group_shapes)
-    mcp.add_tool(shapes.find_shape_by_name)
-    mcp.add_tool(shapes.align_shapes)
-    mcp.add_tool(shapes.distribute_shapes)
-    mcp.add_tool(shapes.set_z_order)
-    mcp.add_tool(shapes.delete_shape)
-    mcp.add_tool(shapes.rotate_shape)
-    mcp.add_tool(shapes.ungroup_shapes)
-    mcp.add_tool(shapes.scale_shape)
-    mcp.add_tool(shapes.select_shapes)
-    mcp.add_tool(shapes.powerclip)
-    mcp.add_tool(inspection.inspect_shapes)
-    mcp.add_tool(inspection.get_ui_selection)
-    mcp.add_tool(inspection.select_shapes_by_id)
-    mcp.add_tool(effects.inspect_contours)
-    mcp.add_tool(effects.apply_contour)
-    mcp.add_tool(effects.break_contour_apart)
-    mcp.add_tool(effects.get_shape_overprint)
-    mcp.add_tool(effects.set_shape_overprint)
-    mcp.add_tool(geometry.set_shape_position_exact)
-    mcp.add_tool(geometry.duplicate_shape_by_id)
-    mcp.add_tool(geometry.duplicate_shapes_by_id)
-    mcp.add_tool(geometry.weld_copies_by_id)
-    mcp.add_tool(geometry.delete_shape_by_id)
-    mcp.add_tool(proof.get_simulate_overprints)
-    mcp.add_tool(proof.set_simulate_overprints)
-    mcp.add_tool(proof.get_print_separation_settings)
-    mcp.add_tool(proof.export_page_proof_pdf)
+    add(shapes.create_shape, ADDS)
+    add(shapes.import_file, ADDS)
+    add(geometry.transform_shapes)
+    add(geometry.arrange_shapes)
+    add(shapes.group_shapes)
+    add(shapes.powerclip)
+    add(shapes.delete_shapes)
+    add(inspection.inspect_shapes, READ)
+    add(inks.get_ink_inventory, READ)
+    add(find.find_shapes, ADDS_SAME)
+    add(inspection.get_ui_selection, READ)
+    add(effects.apply_contour)
+    add(effects.separate_effect)
+    add(silhouette.offset_silhouette, ADDS)
+    add(geometry.duplicate_shapes, ADDS)
+    add(geometry.combine_shapes)
+    add(geometry.convert_to_curves, SETS)
+    add(proof.simulate_overprints, ADDS_SAME)
+    add(proof.get_print_separation_settings, READ)
+    add(proof.export_page_proof_pdf, ADDS)
+    add(plates.render_plates, ADDS)
 
-    mcp.add_tool(text.set_text_content)
-    mcp.add_tool(text.set_text_content_by_id)
-    mcp.add_tool(text.set_text_style)
-    mcp.add_tool(text.fit_text_to_frame)
-    mcp.add_tool(text.check_text_overflow)
-    mcp.add_tool(text.convert_text_to_curves)
-    mcp.add_tool(text.create_text_frame)
+    add(text.inspect_text, READ)
+    add(text.edit_text, SETS)
 
-    mcp.add_tool(colors.set_fill_cmyk)
-    mcp.add_tool(colors.set_fill_rgb)
-    mcp.add_tool(colors.set_fill_pantone)
-    mcp.add_tool(colors.copy_shape_fill)
-    mcp.add_tool(colors.set_outline)
-    mcp.add_tool(colors.set_no_fill)
-    mcp.add_tool(colors.set_no_outline)
-    mcp.add_tool(colors.check_rgb_colors)
-    mcp.add_tool(colors.set_fountain_fill)
-    mcp.add_tool(colors.set_transparency)
+    add(colors.set_fill, SETS)
+    add(colors.set_outline, SETS)
+    add(colors.set_overprint, SETS)
+    add(colors.set_transparency, SETS)
+    add(recolor.replace_color, SETS)
+    add(colors.undo)
 
-    mcp.add_tool(layers.create_layer)
-    mcp.add_tool(layers.get_layers)
-    mcp.add_tool(layers.assign_to_layer)
-    mcp.add_tool(layers.set_layer_visible)
-    mcp.add_tool(layers.lock_layer)
-    mcp.add_tool(layers.get_page_layers)
-    mcp.add_tool(layers.set_page_layer_state)
+    add(layers.list_layers, READ)
+    add(layers.set_layer_properties, SETS)
+    add(layers.create_layer, ADDS)
+    add(layers.move_shapes_to_layer, SETS)
 
-    mcp.add_tool(export.export_pdf)
-    mcp.add_tool(export.export_dxf)
-    mcp.add_tool(export.export_ai)
-    mcp.add_tool(export.export_svg)
-    mcp.add_tool(export.export_png)
-    mcp.add_tool(export.export_jpeg)
-    mcp.add_tool(export.export_preview_png)
-    mcp.add_tool(export.batch_export)
+    add(export.export_pdf, SETS)
+    add(export.export_dxf, SETS)
+    add(export.export_ai, SETS)
+    add(export.export_svg, SETS)
+    add(export.export_png, SETS)
+    add(export.export_jpeg, SETS)
+    add(export.export_preview_png, SETS)
+    add(export.batch_export, SETS)
 
-    mcp.add_tool(preflight.check_dimensions)
-    mcp.add_tool(preflight.check_text_overflow_all)
-    mcp.add_tool(preflight.check_missing_fonts)
-    mcp.add_tool(preflight.get_color_report)
+    add(preflight.check_dimensions, READ)
 
-    mcp.add_tool(templates.list_templates)
-    mcp.add_tool(templates.get_template_info)
-    mcp.add_tool(templates.get_size_variant)
+    add(templates.list_templates, READ)
+    add(templates.get_template_info, READ)
+    add(templates.get_size_variant, READ)
 
-    mcp.add_tool(engineering.populate_title_block)
-    mcp.add_tool(engineering.assemble_engineering_drawing)
+    add(engineering.populate_title_block, SETS)
+    add(engineering.assemble_engineering_drawing, SETS)
 
-    mcp.add_tool(data_merge.read_excel_data)
-    mcp.add_tool(data_merge.merge_record)
-    mcp.add_tool(data_merge.batch_merge)
-    mcp.add_tool(data_merge.generate_barcode)
-    mcp.add_tool(data_merge.generate_qrcode)
-
+    add(data_merge.read_excel_data, READ)
+    add(data_merge.merge_record, SETS)
+    add(data_merge.batch_merge, SETS)
+    add(data_merge.generate_barcode, ADDS)
+    add(data_merge.generate_qrcode, ADDS)
 
 def main():
     parser = argparse.ArgumentParser(description="CorelDRAW MCP bridge")

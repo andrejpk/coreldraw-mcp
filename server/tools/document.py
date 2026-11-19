@@ -1,361 +1,345 @@
-"""文档管理工具 — 打开模板、创建/保存/关闭文档、页面管理"""
+"""Document management: list, open, create, save and close exact documents; edit pages."""
 
 import ntpath
+import os
+from typing import Literal
 
-from core.connection import get_connection
-from core.drawing import CDR_TEXT_SHAPE, walk_shapes
+from core.connection import error_text, get_connection
 from core.models import ToolResult
+from core.results import respond
+from core.targets import (
+    Target,
+    activate_document,
+    call_on_active,
+    describe,
+    document_identity,
+    find_documents,
+    is_active,
+    normalize_path,
+    open_documents,
+    resolve_document,
+    resolve_page,
+    save_as,
+)
+from core.units import MILLIMETER, convert, unit_code, unit_name
 
-_CDR_MILLIMETER = 3
-_UNIT_MAP = {"mm": _CDR_MILLIMETER, "cm": 4, "inch": 1, "pt": 14, "px": 5}
-
-
-def _get_page_size(doc):
-    """读取当前页面尺寸（mm）"""
-    try:
-        doc.Unit = _CDR_MILLIMETER
-        page = doc.ActivePage
-        return page.SizeWidth, page.SizeHeight
-    except Exception:
-        return 0.0, 0.0
-
-
-def _get_page(doc, page_index: int):
-    """Return a CorelDRAW page by 1-based index."""
-    return doc.Pages(page_index)
-
-
-def _scoped_document(app, document_path: str):
-    """Match the active document without opening or changing it."""
-    if not ntpath.isabs(document_path):
-        raise ValueError("document_path must be an absolute Windows path")
-    doc = app.ActiveDocument
-    if not doc:
-        raise RuntimeError("CorelDRAW has no active document")
-    actual_path = ntpath.join(doc.FilePath, doc.FileName)
-    if ntpath.normcase(ntpath.normpath(actual_path)) != ntpath.normcase(ntpath.normpath(document_path)):
-        raise ValueError(f"Document mismatch: active document is {actual_path!r}")
-    return doc, actual_path
+_TOLERANCE_IN = 1e-4
 
 
-def _scoped_page(doc, page_index: int):
-    if not 1 <= page_index <= doc.Pages.Count:
-        raise ValueError(f"page_index must be between 1 and {doc.Pages.Count}")
-    return _get_page(doc, page_index)
+def _layer_entry(layer):
+    return {
+        "name": layer.Name, "master": bool(layer.Master), "special": bool(layer.IsSpecialLayer),
+        "visible": bool(layer.Visible), "printable": bool(layer.Printable), "editable": bool(layer.Editable),
+        "shape_count": layer.Shapes.Count,
+    }
 
 
-def open_template(path: str) -> ToolResult:
-    """打开 CDR 模板文件。path 为模板文件的绝对路径。"""
-    conn = get_connection()
-
-    def _open():
-        import os
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"模板文件不存在: {path}")
-        doc = conn.app.OpenDocument(path)
-        doc.Unit = _CDR_MILLIMETER
-        width, height = _get_page_size(doc)
-        return {"path": path, "pages": doc.Pages.Count, "width": width, "height": height}
-
-    result = conn.safe_call(_open)
-    if result["success"]:
-        return ToolResult.ok(f"模板已打开: {path}", **result["result"])
-    return ToolResult.fail(result.get("error", "打开模板失败"))
+def _pages(doc, detail=False):
+    pages = []
+    for index in range(1, doc.Pages.Count + 1):
+        page = doc.Pages(index)
+        entry = {"index": index, "name": page.Name, "width": page.SizeWidth, "height": page.SizeHeight}
+        if detail:
+            entry["layers"] = [_layer_entry(layer) for layer in page.AllLayers]
+        pages.append(entry)
+    return pages
 
 
-def create_document(width: float, height: float, unit: str = "mm") -> ToolResult:
-    """新建指定尺寸的 CorelDRAW 文档。width/height 为文档尺寸，unit 支持 mm/cm/inch/pt/px。"""
-    conn = get_connection()
-
-    def _create():
-        doc = conn.app.CreateDocument()
-        cdr_unit = _UNIT_MAP.get(unit.lower(), _CDR_MILLIMETER)
-        doc.Unit = cdr_unit
-        page = doc.ActivePage
-        page.SetSize(width, height)
-        return {"width": width, "height": height, "unit": unit, "pages": 1}
-
-    result = conn.safe_call(_create)
-    if result["success"]:
-        return ToolResult.ok(f"新建文档: {width}×{height} {unit}", **result["result"])
-    return ToolResult.fail(result.get("error", "创建文档失败"))
+def _document_entry(app, doc, detail=False):
+    return {
+        "document_path": document_identity(doc), "title": doc.Title, "saved": bool(doc.FullFileName),
+        "dirty": bool(doc.Dirty), "unit": unit_name(doc.Unit), "page_count": doc.Pages.Count,
+        "active": is_active(app, doc), "active_page": doc.ActivePage.Index, "pages": _pages(doc, detail),
+    }
 
 
-def save_document(path: str = "") -> ToolResult:
-    """保存当前文档。path 为空时保存到原路径，否则另存为指定路径。"""
-    conn = get_connection()
-
-    def _save():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        if path:
-            doc.SaveAs(path)
-            saved_path = path
-        else:
-            doc.Save()
-            saved_path = doc.FilePath + doc.FileName if doc.FilePath else "未命名.cdr"
-        return {"path": saved_path}
-
-    result = conn.safe_call(_save)
-    if result["success"]:
-        return ToolResult.ok(f"文档已保存: {result['result']['path']}")
-    return ToolResult.fail(result.get("error", "保存文档失败"))
-
-
-def close_document() -> ToolResult:
-    """关闭当前文档。如有未保存修改会提示。"""
-    conn = get_connection()
-
-    def _close():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        name = doc.FileName or "未命名"
-        modified = doc.Modified if hasattr(doc, "Modified") else False
-        doc.Close()
-        return {"name": name, "had_unsaved_changes": modified}
-
-    result = conn.safe_call(_close)
-    if result["success"]:
-        info = result["result"]
-        msg = f"已关闭: {info['name']}"
-        if info.get("had_unsaved_changes"):
-            msg += "（如有未保存修改）"
-        return ToolResult.ok(msg, **info)
-    return ToolResult.fail(result.get("error", "关闭文档失败"))
-
-
-def add_page() -> ToolResult:
-    """在当前文档末尾添加一个新页面，并激活它。"""
-    conn = get_connection()
-
-    def _add():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        doc.AddPages(1)
-        page = doc.Pages.Last
-        page.Activate()
-        width, height = _get_page_size(doc)
-        return {"page_index": page.Index, "total_pages": doc.Pages.Count, "width": width, "height": height}
-
-    result = conn.safe_call(_add)
-    if result["success"]:
-        return ToolResult.ok("已添加新页面", **result["result"])
-    return ToolResult.fail(result.get("error", "添加页面失败"))
-
-
-def set_page_size(width: float, height: float) -> ToolResult:
-    """修改当前页面尺寸（mm）。"""
-    conn = get_connection()
-
-    def _set():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        doc.Unit = _CDR_MILLIMETER
-        page = doc.ActivePage
-        page.SetSize(width, height)
-        return {"width": width, "height": height, "unit": "mm"}
-
-    result = conn.safe_call(_set)
-    if result["success"]:
-        return ToolResult.ok(f"页面尺寸已设为: {width}×{height} mm", **result["result"])
-    return ToolResult.fail(result.get("error", "设置页面尺寸失败"))
-
-
-def get_document_info() -> ToolResult:
-    """Read the active document's path, pages, dimensions and shape counts without changing it."""
-    conn = get_connection()
-
-    def _info():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        unit = doc.Unit
-        width = conn.app.ConvertUnits(page.SizeWidth, unit, _CDR_MILLIMETER)
-        height = conn.app.ConvertUnits(page.SizeHeight, unit, _CDR_MILLIMETER)
-        shapes = page.Shapes
-        # Count inside CorelDRAW rather than making one COM round trip per shape.
-        text_shapes = shapes.FindShapes("", CDR_TEXT_SHAPE, False).Count
-
-        layers_info = []
-        try:
-            for layer in page.Layers:
-                layers_info.append({
-                    "name": layer.Name,
-                    "visible": layer.Visible if hasattr(layer, "Visible") else True,
-                    "editable": layer.Editable if hasattr(layer, "Editable") else True,
-                })
-        except Exception:
-            pass
-
-        return {
-            "name": doc.FileName or "未命名",
-            "path": doc.FilePath or "",
-            "document_path": ntpath.join(doc.FilePath, doc.FileName) if doc.FilePath else None,
-            "pages": doc.Pages.Count,
-            "current_page": page.Index,
-            "width": round(width, 2),
-            "height": round(height, 2),
-            "unit": "mm",
-            "shapes_count": shapes.Count,
-            "text_shapes_count": text_shapes,
-            "layers": layers_info,
-        }
-
-    result = conn.safe_call(_info)
-    if result["success"]:
-        return ToolResult.ok("文档信息获取成功", **result["result"])
-    return ToolResult.fail(result.get("error", "获取文档信息失败"))
-
-
-def list_all_text_shapes(
-    page_index: int = 0, content_preview_len: int = 40, document_path: str = "",
-) -> ToolResult:
-    """List editable CorelDRAW text shapes on a page, including nested groups.
-
-    Use a one-based page index or 0 for the active page. When supplied, document_path
-    must match the saved active file. Coordinates and sizes are in document units.
-    Converted curves have no editable story and are excluded.
+def list_documents(detail: bool = False) -> ToolResult:
+    """List open documents: document_path (pass it to other tools), title, saved, dirty, unit, page_count,
+    active, active_page and page sizes in that unit. detail=True adds each page's layers (list_layers has more).
     """
     conn = get_connection()
-    if content_preview_len < 0:
-        return ToolResult.fail("content_preview_len must be nonnegative")
 
-    def _list():
-        doc = _scoped_document(conn.app, document_path)[0] if document_path else conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage if page_index == 0 else _scoped_page(doc, page_index)
+    def run():
+        app = conn.app
+        documents = [_document_entry(app, doc, detail) for doc in open_documents(app)]
+        active = next((entry["document_path"] for entry in documents if entry["active"]), None)
+        return {"active_document_path": active, "documents": documents}
 
-        items = []
-        for shape, parent_id in walk_shapes(page.Shapes):
-            if shape.Type != CDR_TEXT_SHAPE:
-                continue
-            item = {
-                "shape_id": str(shape.StaticID), "parent_id": parent_id, "name": shape.Name or "",
-                "x": shape.PositionX, "y": shape.PositionY, "width": shape.SizeWidth, "height": shape.SizeHeight,
-                "writable": False, "text_type": "unknown", "content_preview": "",
-            }
+    return respond(conn.read_call(run))
+
+
+def open_document(path: str, activate: bool = True) -> ToolResult:
+    """Open an absolute .cdr path, or start an unsaved document from a .cdt template. Never changes the unit.
+
+    An open .cdr is returned as is (already_open). activate=False keeps the active document. Returns the
+    list_documents entry.
+    """
+    conn = get_connection()
+
+    def run():
+        app = conn.app
+        if not ntpath.isabs(path):
+            raise ValueError("path must be an absolute Windows path")
+        extension = ntpath.splitext(path)[1].lower()
+        if extension not in (".cdr", ".cdt"):
+            raise ValueError("path must be a .cdr drawing or a .cdt template")
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"File not found: {path}")
+        previous = app.ActiveDocument
+        existing = find_documents(app, path) if extension == ".cdr" else []
+        if len(existing) > 1:
+            raise ValueError(f"{path!r} is open {len(existing)} times; close the duplicates first")
+        if existing:
+            doc = existing[0]
+        elif extension == ".cdt":
+            doc = app.CreateDocumentFromTemplate(path)
+        else:
+            doc = app.OpenDocument(path)
+        if activate:
+            activate_document(app, doc)
+        elif previous is not None and not is_active(app, previous):
+            activate_document(app, previous)
+        return {"already_open": bool(existing), "source_path": path, **_document_entry(app, doc)}
+
+    return respond(conn.safe_call(run), source_path=path)
+
+
+def _file_state(path):
+    try:
+        stat = os.stat(path)
+        return stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return None
+
+
+def _save_as(app, doc, save_as_path, overwrite):
+    """SaveAs with options, refusing to clobber files or other open documents. Returns the prior file state."""
+    if not ntpath.isabs(save_as_path) or ntpath.splitext(save_as_path)[1].lower() != ".cdr":
+        raise ValueError("save_as_path must be an absolute .cdr path")
+    if not os.path.isdir(ntpath.dirname(save_as_path)):
+        raise ValueError(f"The folder does not exist: {ntpath.dirname(save_as_path)}")
+    current = doc.FullFileName
+    same_file = bool(current) and normalize_path(current) == normalize_path(save_as_path)
+    if not same_file and find_documents(app, save_as_path):
+        raise ValueError(f"Another open document uses {save_as_path!r}; close it first")
+    before = _file_state(save_as_path)
+    if before is not None and not same_file and not overwrite:
+        raise ValueError(f"{save_as_path!r} already exists; pass overwrite=True to replace it")
+    if same_file:
+        doc.Save()
+    else:
+        save_as(app, doc, save_as_path)
+    return before
+
+
+def _verify_saved(doc, path, before, data):
+    after = _file_state(path)
+    problems = []
+    if after is None or after[0] <= 0:
+        problems.append("the file is missing or empty")
+    elif before is not None and after[1] == before[1]:
+        problems.append("the file was not rewritten")
+    if normalize_path(doc.FullFileName or "") != normalize_path(path):
+        problems.append(f"the document now refers to {doc.FullFileName!r}")
+    if doc.Dirty:
+        problems.append("the document still has unsaved changes")
+    data.update(bytes=after[0] if after else 0)
+    if problems:
+        data["verification_error"] = f"Save verification failed: {'; '.join(problems)}"
+    return data
+
+
+def save_document(document_path: str, save_as_path: str | None = None, overwrite: bool = False) -> ToolResult:
+    """Save a document in place, or to save_as_path (absolute .cdr), which it then refers to.
+
+    An existing file needs overwrite=True; a path open in another document is refused. Verifies the file, the
+    document's path and its clean state.
+    """
+    conn = get_connection()
+
+    def run():
+        app = conn.app
+        target = resolve_document(app, document_path)
+        doc = target.doc
+        destination = save_as_path or doc.FullFileName
+        if not destination:
+            raise ValueError("This document has never been saved; pass save_as_path")
+        before = _save_as(app, doc, destination, overwrite)
+        data = {"previous_path": target.path, "saved_path": destination, "overwrote": before is not None,
+                **describe(Target(doc, document_identity(doc)))}
+        return _verify_saved(doc, destination, before, data)
+
+    return respond(conn.safe_call(run), document_path=document_path)
+
+
+def close_document(document_path: str, discard_changes: bool = False) -> ToolResult:
+    """Close exactly this document without a prompt. Unsaved changes are refused unless discard_changes=True."""
+    conn = get_connection()
+
+    def run():
+        app = conn.app
+        target = resolve_document(app, document_path)
+        doc = target.doc
+        dirty = bool(doc.Dirty)
+        if dirty and not discard_changes:
+            raise ValueError(f"{target.path!r} has unsaved changes; save it or pass discard_changes=True")
+        if dirty:
+            doc.Dirty = False
+        doc.Close()
+        remaining = [document_identity(other) for other in open_documents(app)]
+        data = {"closed_path": target.path, "discarded_changes": dirty, "open_documents": remaining}
+        if find_documents(app, target.path):
+            data["verification_error"] = "The document is still open after Close"
+        return data
+
+    return respond(conn.safe_call(run), document_path=document_path)
+
+
+def create_document(width: float, height: float, unit: str = "mm", save_as_path: str | None = None) -> ToolResult:
+    """Create a one-page document and make it active. unit (in, mm, cm, pt) is its unit and the page size unit.
+
+    save_as_path (a new absolute .cdr) saves it at once; otherwise its document_path is its title.
+    """
+    conn = get_connection()
+    try:
+        code = unit_code(unit)
+    except ValueError as exc:
+        return ToolResult.fail(str(exc))
+    if not (width > 0 and height > 0):
+        return ToolResult.fail("width and height must be positive")
+
+    def run():
+        app = conn.app
+        doc = app.CreateDocument()
+        try:
+            # A brand-new document takes the requested unit; no existing document is changed.
+            doc.Unit = code
+            doc.ActivePage.SetSize(width, height)
+            data = {}
+            if save_as_path:
+                before = _save_as(app, doc, save_as_path, overwrite=False)
+                _verify_saved(doc, save_as_path, before, data)
+                if "verification_error" in data:
+                    raise RuntimeError(data["verification_error"])
+        except Exception:
+            doc.Dirty = False
+            doc.Close()
+            raise
+        return {**_document_entry(app, doc), **data}
+
+    return respond(conn.safe_call(run))
+
+
+_PAGE_ACTIONS = ("add", "delete", "resize", "activate")
+
+
+def edit_pages(
+    document_path: str,
+    action: Literal["add", "delete", "resize", "activate"],
+    page_index: int | None = None,
+    count: int = 1,
+    width: float | None = None,
+    height: float | None = None,
+    unit: str | None = None,
+) -> ToolResult:
+    """Add, delete, resize or activate pages; never changes the document unit. Returns every page's size.
+
+    add: count (1-100) pages at the end, or after page_index. delete: page_index (not the only page).
+    resize: page_index to width x height in unit. activate: make page_index active. Edits are one undo step.
+    """
+    if action not in _PAGE_ACTIONS:
+        return ToolResult.fail(f"action must be one of {', '.join(_PAGE_ACTIONS)}")
+    if action in ("delete", "resize", "activate") and page_index is None:
+        return ToolResult.fail(f"action={action} needs page_index")
+    if action == "add" and not 1 <= count <= 100:
+        return ToolResult.fail("count must be between 1 and 100")
+    if action == "resize":
+        if width is None or height is None or unit is None or not (width > 0 and height > 0):
+            return ToolResult.fail("resize needs positive width and height and a unit")
+        try:
+            unit_code(unit)
+        except ValueError as exc:
+            return ToolResult.fail(str(exc))
+    conn = get_connection()
+
+    def run():
+        app = conn.app
+        # Page edits are undoable, and CorelDRAW's Undo follows the active document, so activate it.
+        target = resolve_document(app, document_path, activate=True)
+        doc = target.doc
+        page = resolve_page(doc, page_index) if page_index is not None else None
+        before_count = doc.Pages.Count
+        active_before = doc.ActivePage.Index
+        data = {}
+        if action == "activate":
+            page.Activate()
+            if doc.ActivePage.Index != page_index:
+                data["verification_error"] = f"CorelDRAW did not activate page {page_index}"
+        else:
+            doc.BeginCommandGroup(f"Pages: {action}")
             try:
-                frame = shape.Text
-                story = frame.Story
-                content = story.Text
-                item["content_preview"] = content[:content_preview_len]
-                if len(content) > content_preview_len:
-                    item["content_preview"] += "…"
-                text_type = frame.Type
-                if text_type in (0, 1, 2, 3):
-                    item["text_type"] = "paragraph" if text_type in (1, 3) else "artistic"
-                item["writable"] = True
-                for prop in ("Font", "Size", "Bold", "Italic"):
-                    try:
-                        item[prop.lower()] = getattr(story, prop)
-                    except Exception:
-                        item[prop.lower()] = None
-            except Exception as exc:
-                item["read_error"] = str(exc)
-            items.append(item)
-
+                if action == "add":
+                    first = doc.InsertPages(count, False, page_index) if page else doc.AddPages(count)
+                    data["added_page_indices"] = list(range(first.Index, first.Index + count))
+                    if doc.Pages.Count != before_count + count:
+                        data["verification_error"] = "The page count did not grow by count"
+                    # Adding pages activates the new page; keep the page that was active.
+                    shifted = active_before + count if page and active_before > page_index else active_before
+                    if doc.ActivePage.Index != shifted:
+                        doc.Pages(shifted).Activate()
+                elif action == "delete":
+                    if before_count <= 1:
+                        raise ValueError("Cannot delete the only page")
+                    page.Delete()
+                    if doc.Pages.Count != before_count - 1:
+                        data["verification_error"] = "The page count did not shrink by one"
+                else:
+                    doc_unit = doc.Unit
+                    page.SetSize(convert(width, unit, doc_unit, app), convert(height, unit, doc_unit, app))
+                    actual = (convert(page.SizeWidth, doc_unit, unit, app), convert(page.SizeHeight, doc_unit, unit, app))
+                    data["requested"] = {"width": width, "height": height, "unit": unit}
+                    tolerance = convert(_TOLERANCE_IN, "in", unit)
+                    if abs(actual[0] - width) > tolerance or abs(actual[1] - height) > tolerance:
+                        data["verification_error"] = f"The page size reads back as {actual[0]} x {actual[1]} {unit}"
+            finally:
+                doc.EndCommandGroup()
         return {
-            "page": page.Index, "document_unit": doc.Unit, "total": len(items),
-            "writable": sum(item["writable"] for item in items), "shapes": items,
+            "action": action, **describe(target), **data, "page_count": doc.Pages.Count,
+            "active_page": doc.ActivePage.Index, "pages": _pages(doc),
         }
 
-    result = conn.safe_call(_list)
-    if result["success"]:
-        r = result["result"]
-        return ToolResult.ok(
-            f"第{r['page']}页共 {r['total']} 个文字形状，{r['writable']} 个可写入",
-            **r,
-        )
-    return ToolResult.fail(result.get("error", "列举文字形状失败"))
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
 
 
-def add_guideline(position: float, orientation: str = "horizontal") -> ToolResult:
-    """在当前页面添加辅助线。position 为辅助线位置（mm），orientation 为 horizontal 或 vertical。"""
+def add_guideline(document_path: str, position: float, orientation: str = "horizontal") -> ToolResult:
+    """Add a horizontal or vertical guideline at position (mm) on the active page; document_path must be active."""
     conn = get_connection()
+    orientation_lower = orientation.lower()
+    if orientation_lower not in ("horizontal", "vertical"):
+        return ToolResult.fail("orientation must be horizontal or vertical")
 
     def _add():
         doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        doc.Unit = _CDR_MILLIMETER
         page = doc.ActivePage
-        orientation_lower = orientation.lower()
-        if orientation_lower not in ("horizontal", "vertical"):
-            raise ValueError("orientation 必须是 horizontal 或 vertical")
-
+        offset = convert(position, MILLIMETER, doc.Unit, conn.app)
         try:
             if orientation_lower == "horizontal":
-                guide = page.ActiveLayer.CreateGuide(0, position, page.SizeWidth, position)
+                guide = page.ActiveLayer.CreateGuide(0, offset, page.SizeWidth, offset)
             else:
-                guide = page.ActiveLayer.CreateGuide(position, 0, position, page.SizeHeight)
+                guide = page.ActiveLayer.CreateGuide(offset, 0, offset, page.SizeHeight)
         except Exception:
             try:
                 guides = page.Guides
-                if orientation_lower == "horizontal":
-                    guide = guides.Add(position, 0)
-                else:
-                    guide = guides.Add(position, 90)
+                guide = guides.Add(offset, 0) if orientation_lower == "horizontal" else guides.Add(offset, 90)
             except Exception:
-                raise RuntimeError(f"无法添加 {orientation} 辅助线")
+                raise RuntimeError(f"Could not add a {orientation_lower} guideline") from None
 
-        data = {"position": position, "orientation": orientation_lower}
+        data = {"position_mm": position, "orientation": orientation_lower, "page_index": page.Index}
         try:
             data["shape_id"] = str(guide.StaticID)
-        except Exception:
-            pass
+        except Exception as exc:  # the Guides.Add fallback may return a guide without a StaticID
+            data.update(shape_id=None, shape_id_error=error_text(exc))
         return data
 
-    result = conn.safe_call(_add)
-    if result["success"]:
-        return ToolResult.ok(f"已添加 {orientation} 辅助线: {position} mm", **result["result"])
-    return ToolResult.fail(result.get("error", "添加辅助线失败"))
-
-
-def switch_page(page_index: int) -> ToolResult:
-    """切换到指定页面。page_index 为页码（从 1 起）。"""
-    conn = get_connection()
-
-    def _switch():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        if page_index < 1 or page_index > doc.Pages.Count:
-            raise ValueError(f"页码 {page_index} 超出范围（1-{doc.Pages.Count}）")
-        page = _get_page(doc, page_index)
-        page.Activate()
-        doc.Unit = _CDR_MILLIMETER
-        width, height = _get_page_size(doc)
-        return {"page_index": page_index, "width": width, "height": height}
-
-    result = conn.safe_call(_switch)
-    if result["success"]:
-        return ToolResult.ok(f"已切换到第 {page_index} 页", **result["result"])
-    return ToolResult.fail(result.get("error", "切换页面失败"))
-
-
-def delete_page(page_index: int) -> ToolResult:
-    """删除指定页面。page_index 为页码（从 1 起）。"""
-    conn = get_connection()
-
-    def _delete():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        if doc.Pages.Count <= 1:
-            raise RuntimeError("无法删除最后一页")
-        if page_index < 1 or page_index > doc.Pages.Count:
-            raise ValueError(f"页码 {page_index} 超出范围（1-{doc.Pages.Count}）")
-        page = _get_page(doc, page_index)
-        page.Delete()
-        return {"remaining_pages": doc.Pages.Count}
-
-    result = conn.safe_call(_delete)
-    if result["success"]:
-        return ToolResult.ok(f"已删除第 {page_index} 页，剩余 {result['result']['remaining_pages']} 页", **result["result"])
-    return ToolResult.fail(result.get("error", "删除页面失败"))
+    return respond(call_on_active(conn, document_path, _add), f"Added a {orientation_lower} guideline at "
+                   f"{position} mm", document_path=document_path)

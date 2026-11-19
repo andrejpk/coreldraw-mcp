@@ -2,6 +2,7 @@
 
 import sys
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -93,6 +94,88 @@ class BridgeTests(unittest.TestCase):
         finally:
             events.ReleaseMutex(mutex)
             mutex.Close()
+
+    def test_overrunning_read_is_interrupted_and_frees_the_worker(self):
+        worker = connection._COMThread(lambda: None)
+        worker.start()
+        steps = []
+
+        def long_read():
+            # Stands in for a loop of COM calls: the interrupt lands between calls.
+            for _ in range(500):
+                steps.append(1)
+                time.sleep(0.01)
+            return "finished"
+
+        try:
+            with self.assertRaisesRegex(connection._BridgeError, "cancelled"):
+                worker.call(long_read, timeout=0.2, read_only=True)
+            self.assertLess(len(steps), 100)
+            self.assertIsNone(worker.running())
+            self.assertEqual(worker.call(lambda: "usable"), "usable")
+        finally:
+            worker.shutdown()
+            worker.join(3)
+
+    def test_generic_handlers_cannot_swallow_the_interrupt(self):
+        worker = connection._COMThread(lambda: None)
+        worker.start()
+
+        def stubborn_read():
+            for _ in range(500):
+                try:
+                    time.sleep(0.01)
+                except Exception:
+                    pass
+            return "finished"
+
+        try:
+            with self.assertRaisesRegex(connection._BridgeError, "cancelled"):
+                worker.call(stubborn_read, timeout=0.2, read_only=True)
+        finally:
+            worker.shutdown()
+            worker.join(3)
+
+    def test_mutating_work_is_not_interrupted_and_status_names_it(self):
+        bridge = connection.CorelDrawConnection()
+        self.addCleanup(bridge.disconnect)
+        release = threading.Event()
+        bridge._com_thread.call(lambda: setattr(bridge, "_app", SimpleNamespace(Version="24")))
+
+        def edit_shapes():
+            release.wait(3)
+            return "edited"
+
+        try:
+            outcome = {}
+            caller = threading.Thread(target=lambda: outcome.setdefault("r", bridge._call(edit_shapes)))
+            caller.start()
+            time.sleep(0.2)
+            status = bridge.probe()
+            self.assertEqual(status["state"], "busy")
+            self.assertEqual(status["running"]["operation"], "edit_shapes")
+            self.assertFalse(status["running"]["read_only"])
+            self.assertIn("edit_shapes", status["error"])
+            busy = bridge.read_call(lambda: "never")
+            self.assertEqual(busy["state"], "busy")
+            self.assertIn("still running edit_shapes", busy["error"])
+            release.set()
+            caller.join(3)
+            self.assertEqual(outcome["r"]["result"], "edited")
+        finally:
+            release.set()
+
+    def test_only_possible_edits_advance_the_generation(self):
+        bridge = connection.CorelDrawConnection()
+        self.addCleanup(bridge.disconnect)
+        bridge._com_thread.call(lambda: setattr(bridge, "_app", SimpleNamespace(Version="24")))
+        start = bridge.generation
+        self.assertTrue(bridge.read_call(lambda: 1)["success"])
+        self.assertEqual(bridge.generation, start)
+        self.assertTrue(bridge.safe_call(lambda: 1)["success"])
+        self.assertEqual(bridge.generation, start + 1)
+        bridge.safe_call(Mock(side_effect=ValueError("failed edit")))
+        self.assertEqual(bridge.generation, start + 2)
 
     @staticmethod
     def _attach_fake(bridge, app):

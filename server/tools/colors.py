@@ -1,360 +1,625 @@
-"""颜色与填充工具 — CMYK/RGB/Pantone 填充、描边、颜色检查"""
+"""Color editing on exact objects: fills, outlines, overprint, transparency, and undo.
 
+Every color is a color spec (``core.colorspec``): a spot by name (with tint and optional palette), CMYK, RGB,
+registration, none, or a donor shape's fill or outline. Every edit activates its document, is one undo step,
+refuses unsupported targets before changing anything, and returns each object's verified after-state in the
+identity model of ``get_ink_inventory``.
+"""
+
+from __future__ import annotations
+
+import math
+from contextlib import contextmanager
+from typing import Literal
+
+from core import colorspec
 from core.connection import get_connection
-from core.drawing import CDR_COLOR_RGB, CDR_GROUP_SHAPE
 from core.models import ToolResult
-from tools.inspection import _CDR_NO_FILL, _CDR_UNIFORM_FILL, _color_details, _exact_shapes, _on_shapes
+from core.results import respond
+from core.structure import (
+    CONTAINER_TYPES,
+    StaleStructureError,
+    invalidate,
+    locate_entries,
+    read_entries,
+    resolve_path,
+    shape_range,
+)
+from core.targets import resolve_document, resolve_page
+from core.units import MEASUREMENT_UNITS, convert, unit_name
+from tools import inks
 
-_CDR_TEXT_SHAPE = 6
-_FILL_MAP = {"cmyk": 0, "rgb": 1, "pantone": 2}
+_TEXT, _BITMAP = 6, 5
+_UNIFORM, _FOUNTAIN = 1, 2
+_FOUNTAIN_TYPES = {"linear": 1, "radial": 2}
+_FOUNTAIN_NAMES = {1: "linear", 2: "radial", 3: "conical", 4: "square"}
+_FILL_NAMES = {7: "pattern", 9: "texture", 10: "PostScript", 11: "hatch"}
+_FILL, _OUTLINE = inks._PAINT
+_FLAGS = ("array($item.OverprintFill, $item.OverprintOutline, $item.Transparency.Type, "
+          "iif($item.Transparency.Type = 1, $item.Transparency.Uniform, 0))")
+_MAX_CHARACTERS = 4000
+_TEXT_CHUNK = 200
+_WIDTH_TOLERANCE_PT = 0.001
+# ShapeRange.SetOutlineProperties through dynamic pywin32 needs every argument typed: null interface pointers
+# for "keep" (style, arrows) and the type library's "unchanged" defaults for the rest.
+_OUTLINE_ARG_TYPES = ((5, 1), (9, 1), (9, 1), (9, 1), (9, 1), (3, 1), (3, 1), (3, 1), (3, 1), (5, 1), (3, 1),
+                      (5, 1), (5, 1), (5, 1))
 
-
-def copy_shape_fill(
-    document_path: str, page_index: int, source_shape_id: str, target_shape_ids: list[str],
-) -> ToolResult:
-    """Copy a uniform fill from one exact shape to exact unfilled or uniform-fill targets.
-
-    Copies the native CorelDRAW color, including a spot ink and its tint, and reads it back.
-    Any group must be resolved to its individual target shapes first.
-    """
-    if source_shape_id in target_shape_ids:
-        return ToolResult.fail("The donor cannot also be a target")
-
-    def copy(app, doc, targets):
-        donor, = _exact_shapes(doc.Pages(page_index), [source_shape_id])
-        if donor.Fill.Type != _CDR_UNIFORM_FILL:
-            raise ValueError("The donor must have a uniform fill")
-        color = donor.Fill.UniformColor.GetCopy()
-        expected = _color_details(color)
-        if expected["kind"] == "spot":
-            expected["tint"] = color.Tint
-        originals = []
-        for target in targets:
-            fill = target.Fill
-            if target.Type == CDR_GROUP_SHAPE or fill.Type not in (_CDR_NO_FILL, _CDR_UNIFORM_FILL):
-                raise ValueError("Each target must be an individual shape with no fill or a uniform fill")
-            originals.append(fill.UniformColor.GetCopy() if fill.Type == _CDR_UNIFORM_FILL else None)
-
-        changed, observed = [], {}
-        doc.BeginCommandGroup("Copy uniform fill")
-        try:
-            for shape_id, target, original in zip(target_shape_ids, targets, originals, strict=True):
-                changed.append((shape_id, target, original))
-                target.Fill.ApplyUniformFill(color)
-                actual = target.Fill.UniformColor
-                details = _color_details(actual)
-                if details["kind"] == "spot":
-                    details["tint"] = actual.Tint
-                if not actual.IsSame(color) or details != expected:
-                    raise RuntimeError(f"Color readback differs for target {shape_id}")
-                observed[shape_id] = details
-        except Exception as exc:
-            failed = []
-            for shape_id, target, original in reversed(changed):
-                try:
-                    if original is None:
-                        target.Fill.ApplyNoFill()
-                    else:
-                        target.Fill.ApplyUniformFill(original)
-                except Exception:
-                    failed.append(shape_id)
-            if failed:
-                raise RuntimeError(f"{exc}. Verify fill restoration for IDs: {failed}") from exc
-            raise
-        finally:
-            doc.EndCommandGroup()
-        return {"source_shape_id": source_shape_id, "source_color": expected, "target_colors": observed}
-
-    return _on_shapes(document_path, page_index, target_shape_ids, copy, write=True)
+ColorSpec = str | dict
 
 
-def _find_shape(shape_id: str):
-    """按名称或 StaticID 查找形状"""
-    conn = get_connection()
-    doc = conn.app.ActiveDocument
-    if not doc:
-        return None
-    target = str(shape_id)
+class _RefusedError(Exception):
+    def __init__(self, refused):
+        super().__init__("refused")
+        self.refused = refused
+
+
+# --- shared machinery ---------------------------------------------------------------------------------------
+
+@contextmanager
+def _command_group(doc, label):
+    """One undo step: CorelDRAW command group, always closed."""
+    doc.BeginCommandGroup(label)
     try:
-        shapes = doc.ActivePage.Shapes
+        yield
+    finally:
+        doc.EndCommandGroup()
+
+
+def _edit(document_path, page_index, shape_ids, body) -> ToolResult:
+    """Run ``body(app, doc, page, targets)`` as one bridge edit on exact targets ({id: (view, entry)}).
+
+    The target document is activated (Undo follows the active document); the structure cache is dropped after.
+    ``body`` returns the result dict; it may raise ``_RefusedError`` before changing anything.
+    """
+    if not isinstance(shape_ids, list) or not shape_ids or not all(isinstance(i, str) and i for i in shape_ids):
+        return ToolResult.fail("shape_ids must be a non-empty list of StaticID strings")
+    conn = get_connection()
+
+    def run():
+        doc, actual_path = resolve_document(conn.app, document_path, activate=True)
+        page = resolve_page(doc, page_index)
         try:
-            return shapes(shape_id)
-        except Exception:
-            for s in shapes:
+            for attempt in (0, 1):
                 try:
-                    if str(s.StaticID) == target or s.Name == target:
-                        return s
-                except Exception:
-                    continue
-        return None
+                    targets = locate_entries(doc, page, shape_ids)
+                    _verify_targets(targets)
+                    break
+                except StaleStructureError:
+                    if attempt:
+                        raise
+                    invalidate(actual_path)
+            return {"document_path": actual_path, "page_index": page_index, "document_unit": unit_name(doc.Unit),
+                    **body(conn.app, doc, page, targets)}
+        except _RefusedError as refused:
+            return {"document_path": actual_path, "page_index": page_index, "refused": refused.refused}
+        finally:
+            invalidate(actual_path)
+
+    return respond(conn.safe_call(run), document_path=document_path, page_index=page_index)
+
+
+def _by_view(targets):
+    groups = {}
+    for shape_id, (view, entry) in targets.items():
+        groups.setdefault(id(view), (view, []))[1].append((shape_id, entry))
+    return list(groups.values())
+
+
+def _verify_targets(targets):
+    """Check every cached path still holds its ID (one batched read per layer)."""
+    for view, items in _by_view(targets):
+        read_entries(view, [entry for _, entry in items], ["$item.Type"])
+
+
+def _refusal(view, entry, *, bitmap_ok=False):
+    """Why an object cannot be edited by the color tools, or None."""
+    if view.master:
+        return "on a master layer (shared by every page)"
+    if not view.editable:
+        return "on a locked layer"
+    if entry.effect is not None:
+        return f"generated by an effect (effect group {entry.effect}); edit its control shape or the effect"
+    if entry.type in CONTAINER_TYPES:
+        return "a group or effect group; target its member shapes (inspect_shapes parent_id)"
+    if entry.type == _BITMAP and not bitmap_ok:
+        return "a bitmap; its colors are pixels"
+    return None
+
+
+def _check(targets, extra=None, **options):
+    refused = []
+    for shape_id, (view, entry) in targets.items():
+        reason = _refusal(view, entry, **options) or (extra(shape_id, view, entry) if extra else None)
+        if reason:
+            refused.append({"id": shape_id, "layer": view.name, "reason": reason})
+    if refused:
+        raise _RefusedError(refused)
+
+
+def _read(targets, expressions):
+    """{id: row} for one batched read per layer."""
+    rows = {}
+    for view, items in _by_view(targets):
+        values = read_entries(view, [entry for _, entry in items], expressions)
+        rows.update(zip((shape_id for shape_id, _ in items), values, strict=True))
+    return rows
+
+
+def _com_shape(view, entry, shape_id):
+    """The COM shape of a structure entry, its StaticID verified."""
+    shape = resolve_path(view.layer, entry.path)
+    if str(shape.StaticID) != shape_id:
+        raise StaleStructureError(f"Shape {shape_id} is no longer at its cached position")
+    return shape
+
+
+# --- reading state in the inventory's color model -----------------------------------------------------------
+
+def _fill_state(fill, view=None, entry=None):
+    """A queried fill (type, details) as an identity: color, none, fountain (with stops when view is given)."""
+    fill_type, details = fill
+    if fill_type == 0:
+        return dict(colorspec.NONE)
+    if fill_type == _UNIFORM:
+        return colorspec.identity(details)
+    if fill_type == _FOUNTAIN and view is not None:
+        return _fountain_state(view, entry, details)
+    return {"kind": "fountain" if fill_type == _FOUNTAIN else _FILL_NAMES.get(fill_type, f"fill type {fill_type}")}
+
+
+def _fountain_state(view, entry, count):
+    items = ", ".join(f"$item.Fill.Fountain.Colors.Item({index})" for index in range(count))
+    row = read_entries(view, [entry], [
+        "$item.Fill.Fountain.Type", "$item.Fill.Fountain.Angle",
+        f"array({items}).convert(array($item.Position, {inks._color('$item.Color')}))"])[0]
+    fountain_type, angle, stops = row
+    return {"kind": "fountain", "type": _FOUNTAIN_NAMES.get(fountain_type, fountain_type), "angle": round(angle, 3),
+            "stops": [{"position": position, "color": colorspec.identity(color)} for position, color in stops]}
+
+
+def _outline_state(outline, unit):
+    """A queried outline (type, (width, color)) as {color, width_pt}, or none."""
+    outline_type, details = outline
+    if outline_type == 0:
+        return dict(colorspec.NONE)
+    width, color = details
+    return {"color": colorspec.identity(color), "width_pt": round(convert(width, unit, "pt"), 4)}
+
+
+def _characters(view, entry, count):
+    """[(text, fill type, fill, outline type, outline)] per character of a text shape (CorelDRAW positions)."""
+    expressions = []
+    for start in range(1, count + 1, _TEXT_CHUNK):
+        items = ", ".join(f"$item.Characters.Item({index})"
+                          for index in range(start, min(count, start + _TEXT_CHUNK - 1) + 1))
+        expressions.append(f"array($item.Text.Story).convert(array({items}).convert({inks._CHARACTER}))")
+    row = read_entries(view, [entry], expressions)[0] if expressions else ()
+    return [character for chunk in row for character in chunk[0]]
+
+
+def _text_runs(chars, unit):
+    """Group characters into runs [{start, end, text, fill, outline}] (zero-based, end exclusive)."""
+    runs = []
+    for position, (text, fill_type, fill, outline_type, outline) in enumerate(chars):
+        fill_value = _fill_state((fill_type, fill))
+        outline_value = _outline_state((outline_type, outline), unit)
+        if runs and runs[-1]["fill"] == fill_value and runs[-1]["outline"] == outline_value:
+            runs[-1]["end"] = position + 1
+            runs[-1]["text"] += text
+        else:
+            runs.append({"start": position, "end": position + 1, "text": text, "fill": fill_value,
+                         "outline": outline_value})
+    return runs
+
+
+def _story_outline(view, entry):
+    try:
+        return read_entries(view, [entry], [inks._STORY_OUTLINE])[0][0]
+    except StaleStructureError:
+        raise
     except Exception:
-        return None
+        return None  # mixed character outlines
 
 
-def set_fill_cmyk(c: float, m: float, y: float, k: float, shape_id: str = "") -> ToolResult:
-    """设置形状的 CMYK 填充色。shape_id 为空时作用于选中形状。"""
-    conn = get_connection()
-
-    def _fill():
-        if shape_id:
-            shape = _find_shape(shape_id)
-            if shape is None:
-                raise ValueError(f"未找到形状: {shape_id}")
-            shape.Fill.UniformColor.CMYKAssign(c, m, y, k)
-        else:
-            sel = conn.app.ActiveDocument.Selection
-            if not sel or sel.Shapes.Count == 0:
-                raise RuntimeError("没有选中的形状，请指定 shape_id 或先选中形状")
-            for s in sel.Shapes:
-                try:
-                    s.Fill.UniformColor.CMYKAssign(c, m, y, k)
-                except Exception:
-                    pass
-        return {"shape_id": shape_id or "selection", "cmyk": [c, m, y, k]}
-
-    result = conn.safe_call(_fill)
-    if result["success"]:
-        return ToolResult.ok(f"CMYK 填充: C{c} M{m} Y{y} K{k}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置 CMYK 填充失败"))
+def _text_state(view, entry, unit):
+    count, text, fill_type, fill = read_entries(view, [entry], inks._STORY)[0]
+    outline = _story_outline(view, entry)
+    if fill_type == _UNIFORM and outline is not None:
+        return {"text": text, "fill": colorspec.identity(fill), "outline": _outline_state(outline, unit)}
+    if count > _MAX_CHARACTERS:
+        return {"text": text[:80], "fill": {"kind": "mixed"}, "outline": {"kind": "mixed"}, "runs_not_read": count}
+    runs = _text_runs(_characters(view, entry, count), unit)
+    mixed = {"kind": "mixed"}
+    return {"text": text, "runs": runs,
+            "fill": runs[0]["fill"] if len({str(run["fill"]) for run in runs}) == 1 else mixed,
+            "outline": runs[0]["outline"] if len({str(run["outline"]) for run in runs}) == 1 else mixed}
 
 
-def set_fill_rgb(r: int, g: int, b: int, shape_id: str = "") -> ToolResult:
-    """设置形状的 RGB 填充色。"""
-    conn = get_connection()
-
-    def _fill():
-        if shape_id:
-            shape = _find_shape(shape_id)
-            if shape is None:
-                raise ValueError(f"未找到形状: {shape_id}")
-            shape.Fill.UniformColor.RGBAssign(r, g, b)
-        else:
-            sel = conn.app.ActiveDocument.Selection
-            if not sel or sel.Shapes.Count == 0:
-                raise RuntimeError("没有选中的形状")
-            for s in sel.Shapes:
-                try:
-                    s.Fill.UniformColor.RGBAssign(r, g, b)
-                except Exception:
-                    pass
-        return {"shape_id": shape_id or "selection", "rgb": [r, g, b]}
-
-    result = conn.safe_call(_fill)
-    if result["success"]:
-        return ToolResult.ok(f"RGB 填充: ({r}, {g}, {b})", **result["result"])
-    return ToolResult.fail(result.get("error", "设置 RGB 填充失败"))
-
-
-def set_fill_pantone(shape_id: str, pantone_code: str) -> ToolResult:
-    """设置形状的 Pantone 专色填充。pantone_code 如 '485 C'。"""
-    conn = get_connection()
-
-    def _fill():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        # Pantone 填充需要通过 Color 对象的 FindPantone 或类似方法
-        # 尝试用 NamedColor 或通过 Application 的 Pantone 查找
-        try:
-            pantone_color = conn.app.CreateRGBColor(0, 0, 0)
-            pantone_color.FindPantone(pantone_code)
-            shape.Fill.ApplyUniformFill(pantone_color)
-        except Exception:
-            try:
-                color = conn.app.CreateCMYKColor(0, 0, 0, 0)
-                color.FindPantone(pantone_code)
-                shape.Fill.ApplyUniformFill(color)
-            except Exception:
-                raise RuntimeError(f"无法应用 Pantone 色: {pantone_code}")
-        return {"shape_id": shape_id, "pantone": pantone_code}
-
-    result = conn.safe_call(_fill)
-    if result["success"]:
-        return ToolResult.ok(f"Pantone 填充: {pantone_code}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置 Pantone 填充失败"))
+def _states(targets, unit, parts=("fill", "outline")):
+    """Verified state per target: fill, outline (width in pt), overprint/transparency ("flags")."""
+    text = {i: t for i, t in targets.items() if t[1].type == _TEXT}
+    plain = {i: t for i, t in targets.items() if i not in text}
+    result = {}
+    paint = _read(plain, [_FILL, _OUTLINE]) if plain and ({"fill", "outline"} & set(parts)) else {}
+    flags = _read(targets, [_FLAGS]) if "flags" in parts else {}
+    for shape_id, (view, entry) in targets.items():
+        state = {"id": shape_id}
+        if shape_id in paint:
+            fill, outline = paint[shape_id]
+            if "fill" in parts:
+                state["fill"] = _fill_state(fill, view, entry)
+            if "outline" in parts:
+                state["outline"] = _outline_state(outline, unit)
+        elif shape_id in text and ({"fill", "outline"} & set(parts)):
+            state.update(_text_state(view, entry, unit))
+            for part in ("fill", "outline"):
+                if part not in parts:
+                    state.pop(part, None)
+        if shape_id in flags:
+            overprint_fill, overprint_outline, transparency_type, uniform = flags[shape_id][0]
+            state["overprint"] = {"fill": bool(overprint_fill), "outline": bool(overprint_outline)}
+            state["transparency"] = {"type": transparency_type, "uniform": uniform if transparency_type else 0}
+        result[shape_id] = state
+    return result
 
 
-def set_outline(shape_id: str, width: float, color: str = "", color_mode: str = "CMYK") -> ToolResult:
-    """设置形状的描边宽度和颜色。color 格式: CMYK 如 '0,100,100,0'，RGB 如 '255,0,0'。"""
-    conn = get_connection()
-
-    def _outline():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        shape.Outline.Width = width
-        if color:
-            parts = [float(x.strip()) for x in color.split(",")]
-            if color_mode.upper() == "CMYK" or len(parts) == 4:
-                c, m, y, k = parts
-                shape.Outline.Color.CMYKAssign(c, m, y, k)
-            elif color_mode.upper() == "RGB" or len(parts) == 3:
-                r, g, b = [int(x) for x in parts]
-                shape.Outline.Color.RGBAssign(r, g, b)
-        return {"shape_id": shape_id, "width": width, "color": color, "color_mode": color_mode}
-
-    result = conn.safe_call(_outline)
-    if result["success"]:
-        return ToolResult.ok(f"描边: {width}mm, color={color or '保持原色'}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置描边失败"))
+def _outline_range(rng, width, color):
+    """ShapeRange.SetOutlineProperties: width in document units (-1 keeps it), color (None keeps it); everything
+    else (style, arrows, caps, joins, nib, behind fill, scaling) is left unchanged."""
+    dispatch = rng._oleobj_
+    dispatch.InvokeTypes(dispatch.GetIDsOfNames("SetOutlineProperties"), 0, 1, (24, 0), _OUTLINE_ARG_TYPES,
+                         float(width), None, None if color is None else color._oleobj_, None, None,
+                         -2, -2, -1, -1, -9999.0, 0, -1.0, 0.0, 0.0)
 
 
-def set_no_fill(shape_id: str = "") -> ToolResult:
-    """移除形状的填充（设为镂空）。"""
-    conn = get_connection()
-
-    def _no_fill():
-        if shape_id:
-            shape = _find_shape(shape_id)
-            if shape is None:
-                raise ValueError(f"未找到形状: {shape_id}")
-            shape.Fill.ApplyNoFill()
-        else:
-            sel = conn.app.ActiveDocument.Selection
-            if not sel or sel.Shapes.Count == 0:
-                raise RuntimeError("没有选中的形状")
-            for s in sel.Shapes:
-                try:
-                    s.Fill.ApplyNoFill()
-                except Exception:
-                    pass
-        return {"shape_id": shape_id or "selection"}
-
-    result = conn.safe_call(_no_fill)
-    if result["success"]:
-        return ToolResult.ok("已移除填充", **result["result"])
-    return ToolResult.fail(result.get("error", "移除填充失败"))
+def _resolve_color(app, doc, page, spec, targets=()):
+    """Resolve a parsed spec on a page (donors are looked up there and may not be targets)."""
+    if spec.kind == "donor":
+        if spec.shape_id in targets:
+            raise ValueError("The donor cannot also be a target")
+        donor_view, donor_entry = locate_entries(doc, page, [spec.shape_id])[spec.shape_id]
+        return colorspec.resolve(app, doc, spec, donor_shape=_com_shape(donor_view, donor_entry, spec.shape_id))
+    return colorspec.resolve(app, doc, spec)
 
 
-def set_no_outline(shape_id: str = "") -> ToolResult:
-    """移除形状的描边。"""
-    conn = get_connection()
-
-    def _no_outline():
-        if shape_id:
-            shape = _find_shape(shape_id)
-            if shape is None:
-                raise ValueError(f"未找到形状: {shape_id}")
-            shape.Outline.SetNoOutline()
-        else:
-            sel = conn.app.ActiveDocument.Selection
-            if not sel or sel.Shapes.Count == 0:
-                raise RuntimeError("没有选中的形状")
-            for s in sel.Shapes:
-                try:
-                    s.Outline.SetNoOutline()
-                except Exception:
-                    pass
-        return {"shape_id": shape_id or "selection"}
-
-    result = conn.safe_call(_no_outline)
-    if result["success"]:
-        return ToolResult.ok("已移除描边", **result["result"])
-    return ToolResult.fail(result.get("error", "移除描边失败"))
+def _parse(color):
+    try:
+        return colorspec.parse(color), None
+    except colorspec.ColorSpecError as exc:
+        return None, str(exc)
 
 
-def check_rgb_colors() -> ToolResult:
-    """检测文档中的 RGB 颜色（印前检查用，印刷需转 CMYK）。"""
-    conn = get_connection()
+# --- set_fill -----------------------------------------------------------------------------------------------
 
-    def _check():
-        doc = conn.app.ActiveDocument
-        if not doc:
-            raise RuntimeError("没有打开的文档")
-        page = doc.ActivePage
-        rgb_items = []
-        try:
-            for s in page.Shapes:
-                try:
-                    fill_type = s.Fill.Type
-                    if fill_type == 1:  # cdrUniformFill
-                        try:
-                            color = s.Fill.UniformColor
-                            if color.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name,
-                                    "type": "fill",
-                                    "color": f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}",
-                                })
-                        except Exception:
-                            pass
-                    if s.Outline.Type in (1, 2):
-                        try:
-                            color = s.Outline.Color
-                            if color.Type == CDR_COLOR_RGB:
-                                rgb_items.append({
-                                    "name": s.Name,
-                                    "type": "outline",
-                                    "color": f"R{color.RGBRed} G{color.RGBGreen} B{color.RGBBlue}",
-                                })
-                        except Exception:
-                            pass
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return {"found": len(rgb_items), "items": rgb_items, "passed": len(rgb_items) == 0}
-
-    result = conn.safe_call(_check)
-    if result["success"]:
-        r = result["result"]
-        if r["passed"]:
-            return ToolResult.ok("未发现 RGB 颜色，可安全印刷", **r)
-        return ToolResult.ok(f"发现 {r['found']} 处 RGB 颜色，建议转为 CMYK", **r)
-    return ToolResult.fail(result.get("error", "RGB 检查失败"))
+def _fountain_spec(fountain):
+    if not isinstance(fountain, dict):
+        raise colorspec.ColorSpecError("fountain is an object: {type, angle, stops: [{color, position}]}")
+    unknown = set(fountain) - {"type", "angle", "stops"}
+    if unknown:
+        raise colorspec.ColorSpecError(f"Unknown fountain keys: {', '.join(sorted(unknown))}")
+    kind = fountain.get("type", "linear")
+    if kind not in _FOUNTAIN_TYPES:
+        raise colorspec.ColorSpecError("fountain type must be linear or radial")
+    stops = fountain.get("stops")
+    if not isinstance(stops, list) or not 2 <= len(stops) <= 16:
+        raise colorspec.ColorSpecError("fountain needs 2-16 stops")
+    parsed = []
+    for index, stop in enumerate(stops):
+        if not isinstance(stop, dict) or "color" not in stop:
+            raise colorspec.ColorSpecError("Each fountain stop is {color, position (0-100)}")
+        default = 0 if index == 0 else 100 if index == len(stops) - 1 else None
+        position = stop.get("position", default)
+        if position is None or not 0 <= float(position) <= 100:
+            raise colorspec.ColorSpecError("Middle fountain stops need a position between 0 and 100")
+        spec = colorspec.parse(stop["color"])
+        if spec.kind in ("none", "donor"):
+            raise colorspec.ColorSpecError("Fountain stops need a color (no none or donor)")
+        parsed.append((spec, int(round(float(position)))))
+    positions = [position for _, position in parsed]
+    if positions[0] != 0 or positions[-1] != 100 or positions != sorted(set(positions)):
+        raise colorspec.ColorSpecError("Stop positions must start at 0, end at 100 and increase")
+    angle = float(fountain.get("angle", 0.0))
+    if not math.isfinite(angle):
+        raise colorspec.ColorSpecError("angle must be a finite number of degrees")
+    return _FOUNTAIN_TYPES[kind], angle, parsed
 
 
-def set_fountain_fill(
-    shape_id: str,
-    fill_type: str,
-    c1: float, m1: float, y1: float, k1: float,
-    c2: float, m2: float, y2: float, k2: float,
-    angle: float = 45.0
+def set_fill(
+    document_path: str,
+    page_index: int,
+    shape_ids: list[str],
+    color: ColorSpec | None = None,
+    fountain: dict | None = None,
+    from_shape_id: str | None = None,
+    text_range: list[int] | None = None,
 ) -> ToolResult:
-    """设置形状的渐变填充。fill_type: linear/radial/conical/square，颜色为 CMYK。"""
+    """Set the fill of exact shapes to a color, a fountain or a donor's fill. One undo step, read back.
+
+    Pass exactly one of:
+    - color, a color spec (every tool takes these): a spot name ("PANTONE 485 C", "485 C", "RVW-BK01A"; the
+      document palette, then installed palettes; unknown names get near matches), {"ink", "tint": 0-100,
+      "palette"}, "CMYK 0/100/100/0", "RGB 255/0/0", "#FF0000", "registration", "none", or
+      {"from_shape_id", "part": "fill"|"outline"}. get_ink_inventory inks and inspect_shapes colors work as is.
+    - fountain: {"type": "linear"|"radial", "angle": degrees, "stops": [{"color", "position": 0-100}, ...]}.
+    - from_shape_id: copy a donor's uniform fill (same page).
+    text_range [start, end) (inspect_text fill_runs) recolors only those characters of one text shape.
+    Refuses groups and bitmaps. Returns each fill as get_ink_inventory names it (text: runs).
+    """
+    if sum(value is not None for value in (color, fountain, from_shape_id)) != 1:
+        return ToolResult.fail("Pass exactly one of color, fountain or from_shape_id")
+    spec = gradient = None
+    try:
+        if fountain is not None:
+            gradient = _fountain_spec(fountain)
+        else:
+            spec = colorspec.parse({"from_shape_id": from_shape_id} if from_shape_id is not None else color)
+    except colorspec.ColorSpecError as exc:
+        return ToolResult.fail(str(exc))
+    if text_range is not None:
+        if fountain is not None or not isinstance(shape_ids, list) or len(shape_ids) != 1:
+            return ToolResult.fail("text_range needs one text shape and a color (not a fountain)")
+        if not (isinstance(text_range, list) and len(text_range) == 2
+                and all(isinstance(value, int) for value in text_range) and 0 <= text_range[0] < text_range[1]):
+            return ToolResult.fail("text_range is [start, end] with 0 <= start < end")
+
+    def body(app, doc, page, targets):
+        unit = doc.Unit
+
+        def extra(shape_id, view, entry):
+            return "not a text shape (text_range)" if text_range is not None and entry.type != _TEXT else None
+
+        _check(targets, extra)
+        if text_range is not None:
+            return _fill_text_range(app, doc, page, spec, targets, unit, *text_range)
+        if gradient is not None:
+            return _apply_fountain(app, doc, gradient, targets, unit)
+        resolved = _resolve_color(app, doc, page, spec, targets)
+        with _command_group(doc, "MCP set_fill"):
+            for view, items in _by_view(targets):
+                rng = shape_range(view, [entry for _, entry in items])
+                if resolved.none:
+                    rng.ApplyNoFill()
+                else:
+                    rng.ApplyUniformFill(resolved.color)
+        after = _states(targets, unit, ("fill",))
+        data = {"color": resolved.identity, **resolved.info, "shapes": list(after.values())}
+        problems = [{"id": shape_id, "expected": resolved.identity, "actual": state.get("fill")}
+                    for shape_id, state in after.items()
+                    if not colorspec.same(state.get("fill") or {}, resolved.identity)]
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _edit(document_path, page_index, shape_ids, body)
+
+
+def _fill_text_range(app, doc, page, spec, targets, unit, start, end):
+    (shape_id, (view, entry)), = targets.items()
+    count = read_entries(view, [entry], ["$item.Text.Story.Characters.Count"])[0][0]
+    if end > count:
+        raise ValueError(f"The text has {count} characters; end must not exceed it")
+    before = _characters(view, entry, count)
+    resolved = _resolve_color(app, doc, page, spec, targets)
+    shape = _com_shape(view, entry, shape_id)
+    with _command_group(doc, "MCP set_fill text range"):
+        characters_range = shape.Text.Story.Range(start, end)
+        if resolved.none:
+            characters_range.Fill.ApplyNoFill()
+        else:
+            characters_range.Fill.ApplyUniformFill(resolved.color)
+    after = _characters(view, entry, count)
+    problems = []
+    if [c[0] for c in after] != [c[0] for c in before]:
+        problems.append("the text changed")
+    if any(not colorspec.same(_fill_state((c[1], c[2])), resolved.identity) for c in after[start:end]):
+        problems.append("a character in the range has a different fill")
+    if after[:start] != before[:start] or after[end:] != before[end:]:
+        problems.append("a character outside the range changed")
+    data = {"color": resolved.identity, **resolved.info, "text_range": [start, end],
+            "shapes": [{"id": shape_id, "text": "".join(c[0] for c in after), "runs": _text_runs(after, unit)}]}
+    if problems:
+        data["verification_errors"] = [{"id": shape_id, "problems": problems}]
+    return data
+
+
+def _apply_fountain(app, doc, gradient, targets, unit):
+    fountain_type, angle, stops = gradient
+    colors = [(colorspec.resolve(app, doc, spec), position) for spec, position in stops]
+    with _command_group(doc, "MCP set_fill fountain"):
+        for shape_id, (view, entry) in targets.items():
+            shape = _com_shape(view, entry, shape_id)
+            fill = shape.Fill if entry.type != _TEXT else shape.Text.Story.Fill
+            fill.ApplyFountainFill(colors[0][0].color, colors[-1][0].color, fountain_type, angle)
+            for resolved, position in colors[1:-1]:
+                fill.Fountain.Colors.Add(resolved.color, position)
+    after = _states(targets, unit, ("fill",))
+    expected = [(position, resolved.identity) for resolved, position in colors]
+    problems = []
+    for shape_id, state in after.items():
+        fill = state.get("fill") or {}
+        actual = [(stop["position"], stop["color"]) for stop in fill.get("stops", [])]
+        if fill.get("kind") != "fountain" or len(actual) != len(expected) or any(
+                a[0] != e[0] or not colorspec.same(a[1], e[1]) for a, e in zip(actual, expected, strict=False)):
+            problems.append({"id": shape_id, "actual": fill})
+    data = {"fountain": {"type": _FOUNTAIN_NAMES[fountain_type], "angle": angle,
+                         "stops": [{"position": p, "color": r.identity, **r.info} for r, p in colors]},
+            "shapes": list(after.values())}
+    if problems:
+        data["verification_errors"] = problems
+    return data
+
+
+# --- set_outline --------------------------------------------------------------------------------------------
+
+def set_outline(
+    document_path: str,
+    page_index: int,
+    shape_ids: list[str],
+    color: ColorSpec | None = None,
+    width: float | None = None,
+    unit: Literal["pt", "mm", "in", "cm"] = "pt",
+) -> ToolResult:
+    """Set the outline color and/or width of exact shapes, keeping every other outline property. One undo step.
+
+    color: a color spec (see set_fill; spot outlines stay spot); "none" removes the outline. width: positive,
+    in unit. Width alone keeps each color and color alone each width; a shape without an outline needs both.
+    Refuses groups and bitmaps. Returns each outline read back (color, width_pt).
+    """
+    if color is None and width is None:
+        return ToolResult.fail("Pass color, width, or both")
+    if unit not in MEASUREMENT_UNITS:
+        return ToolResult.fail(f"unit must be one of {', '.join(MEASUREMENT_UNITS)}")
+    if width is not None and (not math.isfinite(width) or width <= 0):
+        return ToolResult.fail("width must be positive; use color='none' to remove an outline")
+    spec, error = _parse(color) if color is not None else (None, None)
+    if error:
+        return ToolResult.fail(error)
+    if spec is not None and spec.kind == "none" and width is not None:
+        return ToolResult.fail("color 'none' removes the outline; do not pass width with it")
+    removing = spec is not None and spec.kind == "none"
+
+    def body(app, doc, page, targets):
+        document_unit = doc.Unit
+        before = _states(targets, document_unit, ("outline",))
+
+        def extra(shape_id, view, entry):
+            outline = before[shape_id].get("outline") or {}
+            if outline.get("kind") == "none" and not removing and (spec is None or width is None):
+                return "has no outline; pass both color and width"
+            if outline.get("kind") == "mixed" and (spec is None or width is None) and not removing:
+                return "text with mixed outlines; pass both color and width"
+            return None
+
+        _check(targets, extra)
+        resolved = _resolve_color(app, doc, page, spec, targets) if spec is not None else None
+        if resolved is not None and resolved.none and not removing:
+            raise ValueError("The donor has no outline or fill to copy; use color='none' to remove outlines")
+        document_width = convert(width, unit, document_unit, app) if width is not None else -1.0
+        with _command_group(doc, "MCP set_outline"):
+            for view, items in _by_view(targets):
+                if removing:
+                    for shape_id, entry in items:
+                        _com_shape(view, entry, shape_id).Outline.SetNoOutline()
+                else:
+                    _outline_range(shape_range(view, [entry for _, entry in items]), document_width,
+                                  resolved.color if resolved is not None else None)
+        after = _states(targets, document_unit, ("outline",))
+        problems = []
+        for shape_id, state in after.items():
+            outline = state.get("outline") or {}
+            if removing:
+                ok = outline.get("kind") == "none"
+            else:
+                old = before[shape_id].get("outline") or {}
+                want_color = resolved.identity if resolved is not None else old.get("color") or {}
+                want_width = convert(width, unit, "pt") if width is not None else old.get("width_pt", 0)
+                ok = (colorspec.same(outline.get("color") or {}, want_color)
+                      and abs(outline.get("width_pt", -1) - want_width) <= _WIDTH_TOLERANCE_PT)
+            if not ok:
+                problems.append({"id": shape_id, "before": before[shape_id].get("outline"), "actual": outline})
+            if unit != "pt" and "width_pt" in outline:
+                outline["width"], outline["unit"] = round(convert(outline["width_pt"], "pt", unit), 6), unit
+        data = {"shapes": list(after.values())}
+        if resolved is not None:
+            data.update(color=resolved.identity, **resolved.info)
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _edit(document_path, page_index, shape_ids, body)
+
+
+# --- set_overprint ------------------------------------------------------------------------------------------
+
+def set_overprint(
+    document_path: str, page_index: int, shape_ids: list[str], fill: bool | None = None, outline: bool | None = None,
+) -> ToolResult:
+    """Set the fill and/or outline overprint flags of exact shapes; omitted flags are kept. One undo step,
+    read back. Refuses groups and bitmaps."""
+    if fill is None and outline is None:
+        return ToolResult.fail("Pass fill, outline, or both")
+
+    def body(app, doc, page, targets):
+        _check(targets)
+        with _command_group(doc, "MCP set_overprint"):
+            for shape_id, (view, entry) in targets.items():
+                shape = _com_shape(view, entry, shape_id)
+                if fill is not None:
+                    shape.OverprintFill = fill
+                if outline is not None:
+                    shape.OverprintOutline = outline
+        after = _states(targets, doc.Unit, ("flags",))
+        problems = []
+        for shape_id, state in after.items():
+            state.pop("transparency", None)
+            flags = state["overprint"]
+            if (fill is not None and flags["fill"] != fill) or (outline is not None and flags["outline"] != outline):
+                problems.append({"id": shape_id, "actual": flags})
+        data = {"shapes": list(after.values())}
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _edit(document_path, page_index, shape_ids, body)
+
+
+# --- set_transparency ---------------------------------------------------------------------------------------
+
+def set_transparency(document_path: str, page_index: int, shape_ids: list[str], opacity: float) -> ToolResult:
+    """Set uniform transparency on exact shapes: opacity 0-100 (100 removes it). One undo step, read back.
+
+    Transparency blends or halftones the ink on output (get_ink_inventory warns about it). Refuses groups.
+    """
+    if not math.isfinite(opacity) or not 0 <= opacity <= 100:
+        return ToolResult.fail("opacity must be between 0 and 100")
+    level = int(round(100 - opacity))
+
+    def body(app, doc, page, targets):
+        _check(targets, bitmap_ok=True)
+        with _command_group(doc, "MCP set_transparency"):
+            for shape_id, (view, entry) in targets.items():
+                transparency = _com_shape(view, entry, shape_id).Transparency
+                if level == 0:
+                    transparency.ApplyNoTransparency()
+                else:
+                    transparency.ApplyUniformTransparency(level)
+        after = _states(targets, doc.Unit, ("flags",))
+        problems = []
+        for shape_id, state in after.items():
+            state.pop("overprint", None)
+            actual = state.pop("transparency")
+            uniform = actual["type"] == 1
+            if (level == 0 and actual["type"] != 0) or (level and (not uniform or actual["uniform"] != level)):
+                problems.append({"id": shape_id, "actual": actual})
+            state["opacity"] = 100 if actual["type"] == 0 else (100 - actual["uniform"]) if uniform else None
+        data = {"shapes": list(after.values())}
+        if problems:
+            data["verification_errors"] = problems
+        return data
+
+    return _edit(document_path, page_index, shape_ids, body)
+
+
+# --- undo ---------------------------------------------------------------------------------------------------
+
+def undo(document_path: str, steps: int = 1) -> ToolResult:
+    """Undo the last steps (1-20) of a document; every edit tool call is one step. Activates the document.
+
+    CorelDRAW does not expose its undo history, so the result cannot say what was undone: check with
+    inspect_shapes or get_ink_inventory.
+    """
+    if not isinstance(steps, int) or not 1 <= steps <= 20:
+        return ToolResult.fail("steps must be between 1 and 20")
     conn = get_connection()
 
-    def _fill():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        # CorelDRAW fountain fill constants: linear=1, radial=2, conical=3, square=4.
-        type_map = {"linear": 1, "radial": 2, "conical": 3, "square": 4}
-        ftype = type_map.get(fill_type.lower())
-        if ftype is None:
-            raise ValueError(f"无效的渐变类型: {fill_type}，支持 linear/radial/conical/square")
-        start_color = conn.app.CreateCMYKColor(c1, m1, y1, k1)
-        end_color = conn.app.CreateCMYKColor(c2, m2, y2, k2)
-        shape.Fill.ApplyFountainFill(start_color, end_color, ftype, angle)
-        return {
-            "shape_id": shape_id,
-            "fill_type": fill_type,
-            "from_cmyk": [c1, m1, y1, k1],
-            "to_cmyk": [c2, m2, y2, k2],
-            "angle": angle
-        }
+    def run():
+        doc, actual_path = resolve_document(conn.app, document_path, activate=True)
+        try:
+            doc.Undo(steps)
+        finally:
+            invalidate(actual_path)
+        return {"document_path": actual_path, "undone_steps": steps, "dirty": bool(doc.Dirty),
+                "undo_history_available": False}
 
-    result = conn.safe_call(_fill)
-    if result["success"]:
-        return ToolResult.ok(f"渐变填充: {fill_type}, C{c1}M{y1}Y{y1}K{k1} → C{c2}M{m2}Y{y2}K{k2}", **result["result"])
-    return ToolResult.fail(result.get("error", "设置渐变填充失败"))
-
-
-def set_transparency(shape_id: str, opacity: float) -> ToolResult:
-    """设置形状的透明度。opacity: 0-100，0 为完全透明，100 为不透明。"""
-    conn = get_connection()
-
-    def _transparency():
-        shape = _find_shape(shape_id)
-        if shape is None:
-            raise ValueError(f"未找到形状: {shape_id}")
-        if opacity < 0 or opacity > 100:
-            raise ValueError("opacity 必须在 0-100 之间")
-        transparency = int(round(100 - opacity))
-        shape.Transparency.ApplyUniformTransparency(transparency)
-        return {"shape_id": shape_id, "opacity": opacity}
-
-    result = conn.safe_call(_transparency)
-    if result["success"]:
-        return ToolResult.ok(f"透明度: {opacity}%", **result["result"])
-    return ToolResult.fail(result.get("error", "设置透明度失败"))
+    return respond(conn.safe_call(run), document_path=document_path)
