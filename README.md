@@ -53,14 +53,17 @@ This project exposes CorelDRAW as an MCP (Model Context Protocol) tool server. A
 
 | Module | Tools | Functionality |
 |--------|-------|---------------|
-| `document` | 7 | Open template, create, save, close, page management |
-| `shapes` | 11 | Rectangle / ellipse / line drawing, SVG / image import, boolean ops |
-| `text` | 5 | Text replacement, style, overflow detection, convert to curves |
-| `colors` | 8 | CMYK / RGB / Pantone fill & stroke, RGB compliance check |
-| `layers` | 5 | Create, query, assign, show/hide, lock layers |
-| `export` | 7 | PDF / DXF / AI / SVG / PNG export, visual preview, batch export |
-| `preflight` | 4 | Size check, text overflow, missing fonts, color report |
-| `data_merge` | 3 | Excel data read, barcode / QR code generation |
+| `document` | 7 | `list_documents`, `open_document`, `create_document`, `save_document` (save-as with overwrite guard), `close_document` (by path), `edit_pages` (add/delete/resize/activate), guidelines. Every tool takes an exact `document_path`; units are never changed |
+| `shapes` | 5 | `create_shape` (rectangle / ellipse / line / artistic or paragraph text on an exact page and layer, explicit units, color specs, font and size), `import_file` (SVG, PDF, PNG... onto an exact page and layer via `Layer.Import`, positioned and sized, new IDs), `group_shapes` (group / ungroup / ungroup_all), `powerclip` (place / extract), `delete_shapes` (many IDs, one call); exact IDs, one undo step each, verified |
+| `geometry` + `silhouette` + `effects` | 8 | `offset_silhouette` (combined underbase / spread in one call: welds copies of fills, stroked outlines and text of exact objects across layers with `Shape.Weld`, skips `exclude_colors`, contour effect inside or outside, fill, overprint, target layer; verified area and inset; stops and undoes itself after 35 s), `combine_shapes` (weld / trim / intersect / combine / break apart, keep sources, target layer, order-preserving weld), `duplicate_shapes`, `convert_to_curves` (exact IDs), `apply_contour`, `separate_effect` (contour, drop shadow, extrude, blend), `transform_shapes` (move to / by, size, scale, rotate about an explicit anchor in an explicit unit, per shape or as a group, verified bounds), `arrange_shapes` (align, distribute, z-order front/back/forward/backward/above/below with neighbours reported); one undo step each, failures rolled back |
+| `find` | 1 | `find_shapes`: combinable filters (type, name glob, color spec on fill/outline/text runs, sizes, bounds, on/off page, layer flags, text, effects, PowerClips, depth, overprint, read-only CQL) and cleanup presets (zero size, invisible, stacked duplicates, off page, hairline, empty text, tiny, hidden-but-printable, registration on art); paged records, counts, optional UI selection |
+| `text` | 2 | `inspect_text` (exact IDs, a page or the whole document: content, font runs, fill runs with whitespace flags, outline, paragraph frame overflow, missing fonts), `edit_text` (content keeping each run's fill and font, `[start, end)` range edits, font / size / bold / italic / alignment, fit to frame; one undo step, verified) |
+| `colors` + `recolor` | 6 | `set_fill` (spot by name + tint, CMYK, RGB, registration, none, fountain, donor, text ranges), `set_outline` (spot outlines, explicit width units), `set_overprint`, `set_transparency`, `replace_color` (scope-wide, dry run, one undo step, verified), `undo` |
+| `proof` + `plates` | 4 | `export_page_proof_pdf` (page or one layer, optional hidden-but-printable layers, state restored), `render_plates` (Ghostscript films per plate: coverage, bboxes, registration-only, object attribution, predicted vs rendered, containment/choke check), `simulate_overprints`, `get_print_separation_settings` |
+| `layers` | 4 | `list_layers` (every page and master layer: visible, printable, locked, color, object counts), `set_layer_properties` (visible / printable / editable / rename; master layers only with `master=true`; reports the dirty flag), `create_layer` (exact page or master), `move_shapes_to_layer` (exact IDs within a page, order kept, active layer unchanged) |
+| `export` | 8 | PDF / DXF / AI / SVG / PNG / JPEG export of the active page, visual preview, batch export |
+| `preflight` | 1 | `check_dimensions` (page size; text overflow and missing fonts are in `inspect_text`) |
+| `data_merge` | 5 | Excel data read, single and batch template merge, barcode / QR code generation |
 
 ---
 
@@ -119,22 +122,49 @@ Open `http://localhost:8501`, enter your API key in the sidebar, and control Cor
 
 > **Note**: The Streamlit UI connects to CorelDRAW directly via COM. Do **not** run `server.py` at the same time — two simultaneous COM connections can cause conflicts.
 
-### Option 2 — Claude Desktop / OpenCode via MCP HTTP
+### Option 2 — Codex launches the local MCP bridge
 
-The repo ships a `.mcp.json` that Claude Desktop and OpenCode auto-discover:
+Use a stdio MCP entry in Codex. Replace the paths with your checkout's full paths:
 
-```bash
-# Start MCP Server in HTTP mode
-cd server
-MCP_TRANSPORT=streamable-http python server.py
+```toml
+[mcp_servers.coreldraw]
+command = 'C:/path/to/coreldraw-mcp/.venv/Scripts/python.exe'
+args = ['C:/path/to/coreldraw-mcp/server/server.py', '--stdio']
+cwd = 'C:/path/to/coreldraw-mcp'
+tool_timeout_sec = 90
 ```
 
-### Option 3 — stdio mode (for MCP client integration)
+Codex launches the bridge when it initializes the MCP connection and owns
+the child process. Open CorelDRAW yourself in the same Windows session.
+The bridge can start while CorelDRAW is closed; use `get_coreldraw_status`
+to check whether COM is ready. CorelDRAW 2022 can omit the application from
+the Running Object Table. The bridge uses COM dispatch as a fallback only
+after verifying the registered executable is already running for the same
+user in the same Windows session. Avoid closing CorelDRAW during a tool call.
 
-```bash
-cd server
-MCP_TRANSPORT=stdio python server.py
+The 90-second client timeout leaves room for the bridge's 60-second COM
+deadline and two seconds of queue time. Expired queued requests are cancelled.
+The bridge never replays a tool call. If a running call stalls, look for a
+CorelDRAW dialog and verify the document or export before retrying. A call
+may finish after timing out. Separate stdio clients serialize CorelDRAW
+operations within the Windows session. If a client is busy, wait for its call
+to finish before submitting another.
+
+The stdio bridge writes diagnostics to the client's stderr capture. If the
+connection stays wedged, reconcile the last operation, then start a fresh
+client session. Apply MCP configuration changes by reopening Codex if its
+active connection is stale.
+
+### Option 3 — start an HTTP bridge manually for an HTTP client
+
+```powershell
+.\.venv\Scripts\python.exe server\server.py --local-http
 ```
+
+Connect to `http://127.0.0.1:8765/mcp` (the URL in `.mcp.json`).
+`/healthz` checks the listener; `/readyz` independently checks CorelDRAW.
+The manual HTTP bridge rotates its log at `logs/server.log`. MCP itself needs
+no LLM API key; the Streamlit and agent integrations do.
 
 ---
 

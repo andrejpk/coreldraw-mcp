@@ -13,6 +13,16 @@
 
 ---
 
+[2026-11-17 10:30] DONE MCP experiment program: 13 of 20 cycles, 99 → 60 tools, catalog 20.1k → 13.5k tokens, acceptance 504/504 + failure 19/19; PR andrejpk/coreldraw-mcp#2 → ../../docs/experiments/REPORT.md
+
+[2026-11-17 01:50] FIX Installed Ghostscript 10.08.0; layer proofs now make a hidden target visible (hidden layers exported as default-off PDF layers rendered blank); acceptance 37/37 with plate checks
+
+[2026-11-17 01:35] WIP PLAN MCP improvement experiment program started on claude/experiments-integration; protocol + backlog in docs/experiments/, E00 fixture agent running → ../../docs/experiments/backlog.md
+
+[2026-11-17 01:30] DONE Production follow-up tools: text fill runs, order-preserving weld, single-layer proof, batched inspection (1,152 s → 15.6 s) on branch claude/production-followup-tools → sessions/2026-11-17-0130.md
+
+[2026-11-16 FIX] Codex launches the CorelDRAW bridge over stdio; explicit COM readiness, no replay of edits, cross-client serialization, and paged shape inspection → ../../README.md
+
 [2026-06-04 FIX] 新增英文 README，原中文版改为 README-CN，修正两处 License 行错写的 MIT → Apache 2.0
 
 [2026-06-04 FIX] 版权主体改为深圳市玄熵智能科技有限责任公司，新增 NOTICE 文件，格式与 My-Hermes-Desktop 一致

@@ -1,151 +1,239 @@
+import argparse
 import os
+import struct
 import sys
 from pathlib import Path
+
+from core.connection import close_connection, get_connection
+from core.models import ToolResult
+from core.results import CorelTool
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 from loguru import logger
+from starlette.concurrency import run_in_threadpool
+from starlette.responses import JSONResponse
 
-load_dotenv(Path(__file__).parent.parent / ".env")
+_ROOT = Path(__file__).resolve().parent.parent
+_HTTP_OPTIONS = {"path": "/mcp", "stateless_http": True, "json_response": True, "host_origin_protection": True}
+INSTRUCTIONS = """CorelDRAW automation. Conventions shared by every tool:
+- document_path: an open document's full path as list_documents reports it (an unsaved document's title).
+  Reads work on any open document; edits activate their document, because CorelDRAW undoes the active one.
+- page_index and pages are one-based. shape_ids are StaticID strings of that page, from inspect_shapes or
+  find_shapes.
+- unit: "in", "mm", "cm" or "pt". Results report lengths in document_unit unless they name a unit. Bounds are
+  [left, bottom, right, top] in page coordinates, y up.
+- Colors are color specs, documented on set_fill.
+- Edit tools are one undo step (undo reverts it) and read their result back. They refuse the whole call,
+  changing nothing, for locked or master layers, effect-generated objects and other unsupported targets, and
+  list each target in data.refused.
+- Every tool returns {success, message, data, error}. A failed call's error says what to do next, and
+  data.state tells CorelDRAW problems (busy or timeout: retry or poll get_coreldraw_status; disconnected,
+  not_running, unavailable) from a request to fix (tool_error).
+"""
+mcp = FastMCP("coreldraw-signage", instructions=INSTRUCTIONS)
 
-from core.connection import init_connection, close_connection, get_connection
-from core.models import ToolResult
+# Tool annotations (MCP hints; the defaults are read-write, destructive, not idempotent).
+READ = {"readOnlyHint": True}
+ADDS = {"destructiveHint": False}
+ADDS_SAME = {"destructiveHint": False, "idempotentHint": True}
+SETS = {"idempotentHint": True}
 
 
-_MCP_TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio")
-_MCP_HOST = os.environ.get("MCP_HOST", "127.0.0.1")
-_MCP_PORT = int(os.environ.get("MCP_PORT", "8765"))
+def _lean_schema(schema: dict) -> dict:
+    """Drop the null branch and null default of optional parameters: omitting one means the same thing.
 
-mcp = FastMCP("coreldraw-signage")
+    Arguments are still validated against the function signature, so an explicit null keeps working.
+    """
+    for prop in schema.get("properties", {}).values():
+        branches = prop.get("anyOf")
+        if branches and {"type": "null"} in branches and "default" in prop and prop["default"] is None:
+            rest = [branch for branch in branches if branch != {"type": "null"}]
+            del prop["anyOf"], prop["default"]
+            if len(rest) == 1:
+                prop.update(rest[0])
+            else:
+                prop["anyOf"] = rest
+    return schema
 
 
-def setup_logging():
+def add(fn, hints=None):
+    """Register a tool function: docstring as description, no output schema (every tool returns the same
+    ToolResult object, still sent as structured content; a failure has isError true), lean input schema, MCP
+    annotations."""
+    tool = CorelTool.from_function(fn, output_schema=None, annotations=hints)
+    tool.parameters = _lean_schema(tool.parameters)
+    mcp.add_tool(tool)
+
+
+def setup_logging(*, http):
     logger.remove()
-    logger.add(
-        sys.stderr,
-        level="INFO",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
-    )
-    logger.add(
-        "logs/server.log",
-        rotation="10 MB",
-        retention="7 days",
-        level="DEBUG",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
-    )
+    if sys.stderr is not None:
+        logger.add(sys.stderr, level="INFO")
+    if http:
+        logger.add(_ROOT / "logs/server.log", rotation="10 MB", retention="7 days", level="DEBUG")
+
+
+def get_coreldraw_status() -> ToolResult:
+    """Check that CorelDRAW responds, without touching any document. Returns state "ready" and the version.
+
+    While another tool runs: state "busy" and running (operation, seconds, read_only, time_limit_seconds,
+    timed_out, interrupting).
+    """
+    status = get_connection().probe()
+    if status["success"]:
+        return ToolResult.ok(state="ready", version=status["version"])
+    data = {"state": status["state"]}
+    if status.get("running"):
+        data["running"] = status["running"]
+    return ToolResult(success=False, error=status["error"], data=data)
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request):
+    return JSONResponse({"service": "coreldraw-signage", "status": "alive"})
+
+
+@mcp.custom_route("/readyz", methods=["GET"])
+async def readyz(request):
+    status = await run_in_threadpool(get_coreldraw_status)
+    return JSONResponse(status.model_dump(), status_code=200 if status.success else 503)
 
 
 def register_tools():
-    from tools import document, shapes, text, colors, layers, export, preflight, data_merge, templates, engineering
+    from tools import (
+        colors,
+        data_merge,
+        document,
+        effects,
+        engineering,
+        export,
+        find,
+        geometry,
+        inks,
+        inspection,
+        layers,
+        plates,
+        preflight,
+        proof,
+        recolor,
+        shapes,
+        silhouette,
+        templates,
+        text,
+    )
 
-    mcp.add_tool(document.open_template)
-    mcp.add_tool(document.create_document)
-    mcp.add_tool(document.save_document)
-    mcp.add_tool(document.close_document)
-    mcp.add_tool(document.add_page)
-    mcp.add_tool(document.set_page_size)
-    mcp.add_tool(document.get_document_info)
-    mcp.add_tool(document.list_all_text_shapes)
-    mcp.add_tool(document.add_guideline)
-    mcp.add_tool(document.switch_page)
-    mcp.add_tool(document.delete_page)
+    add(get_coreldraw_status, READ)
+    add(document.list_documents, READ)
+    add(document.open_document, ADDS_SAME)
+    add(document.create_document, ADDS)
+    add(document.save_document, SETS)
+    add(document.close_document)
+    add(document.edit_pages)
+    add(document.add_guideline, ADDS)
 
-    mcp.add_tool(shapes.create_rectangle)
-    mcp.add_tool(shapes.create_ellipse)
-    mcp.add_tool(shapes.create_line)
-    mcp.add_tool(shapes.import_svg)
-    mcp.add_tool(shapes.import_image)
-    mcp.add_tool(shapes.set_shape_size)
-    mcp.add_tool(shapes.set_shape_position)
-    mcp.add_tool(shapes.boolean_operation)
-    mcp.add_tool(shapes.convert_to_curves)
-    mcp.add_tool(shapes.group_shapes)
-    mcp.add_tool(shapes.find_shape_by_name)
-    mcp.add_tool(shapes.align_shapes)
-    mcp.add_tool(shapes.distribute_shapes)
-    mcp.add_tool(shapes.set_z_order)
-    mcp.add_tool(shapes.delete_shape)
-    mcp.add_tool(shapes.rotate_shape)
-    mcp.add_tool(shapes.ungroup_shapes)
-    mcp.add_tool(shapes.scale_shape)
-    mcp.add_tool(shapes.select_shapes)
-    mcp.add_tool(shapes.powerclip)
+    add(shapes.create_shape, ADDS)
+    add(shapes.import_file, ADDS)
+    add(geometry.transform_shapes)
+    add(geometry.arrange_shapes)
+    add(shapes.group_shapes)
+    add(shapes.powerclip)
+    add(shapes.delete_shapes)
+    add(inspection.inspect_shapes, READ)
+    add(inks.get_ink_inventory, READ)
+    add(find.find_shapes, ADDS_SAME)
+    add(inspection.get_ui_selection, READ)
+    add(effects.apply_contour)
+    add(effects.separate_effect)
+    add(silhouette.offset_silhouette, ADDS)
+    add(geometry.duplicate_shapes, ADDS)
+    add(geometry.combine_shapes)
+    add(geometry.convert_to_curves, SETS)
+    add(proof.simulate_overprints, ADDS_SAME)
+    add(proof.get_print_separation_settings, READ)
+    add(proof.export_page_proof_pdf, ADDS)
+    add(plates.render_plates, ADDS)
 
-    mcp.add_tool(text.set_text_content)
-    mcp.add_tool(text.set_text_style)
-    mcp.add_tool(text.fit_text_to_frame)
-    mcp.add_tool(text.check_text_overflow)
-    mcp.add_tool(text.convert_text_to_curves)
-    mcp.add_tool(text.create_text_frame)
+    add(text.inspect_text, READ)
+    add(text.edit_text, SETS)
 
-    mcp.add_tool(colors.set_fill_cmyk)
-    mcp.add_tool(colors.set_fill_rgb)
-    mcp.add_tool(colors.set_fill_pantone)
-    mcp.add_tool(colors.set_outline)
-    mcp.add_tool(colors.set_no_fill)
-    mcp.add_tool(colors.set_no_outline)
-    mcp.add_tool(colors.check_rgb_colors)
-    mcp.add_tool(colors.set_fountain_fill)
-    mcp.add_tool(colors.set_transparency)
+    add(colors.set_fill, SETS)
+    add(colors.set_outline, SETS)
+    add(colors.set_overprint, SETS)
+    add(colors.set_transparency, SETS)
+    add(recolor.replace_color, SETS)
+    add(colors.undo)
 
-    mcp.add_tool(layers.create_layer)
-    mcp.add_tool(layers.get_layers)
-    mcp.add_tool(layers.assign_to_layer)
-    mcp.add_tool(layers.set_layer_visible)
-    mcp.add_tool(layers.lock_layer)
+    add(layers.list_layers, READ)
+    add(layers.set_layer_properties, SETS)
+    add(layers.create_layer, ADDS)
+    add(layers.move_shapes_to_layer, SETS)
 
-    mcp.add_tool(export.export_pdf)
-    mcp.add_tool(export.export_dxf)
-    mcp.add_tool(export.export_ai)
-    mcp.add_tool(export.export_svg)
-    mcp.add_tool(export.export_png)
-    mcp.add_tool(export.export_jpeg)
-    mcp.add_tool(export.export_preview_png)
-    mcp.add_tool(export.batch_export)
+    add(export.export_pdf, SETS)
+    add(export.export_dxf, SETS)
+    add(export.export_ai, SETS)
+    add(export.export_svg, SETS)
+    add(export.export_png, SETS)
+    add(export.export_jpeg, SETS)
+    add(export.export_preview_png, SETS)
+    add(export.batch_export, SETS)
 
-    mcp.add_tool(preflight.check_dimensions)
-    mcp.add_tool(preflight.check_text_overflow_all)
-    mcp.add_tool(preflight.check_missing_fonts)
-    mcp.add_tool(preflight.get_color_report)
+    add(preflight.check_dimensions, READ)
 
-    mcp.add_tool(templates.list_templates)
-    mcp.add_tool(templates.get_template_info)
-    mcp.add_tool(templates.get_size_variant)
+    add(templates.list_templates, READ)
+    add(templates.get_template_info, READ)
+    add(templates.get_size_variant, READ)
 
-    mcp.add_tool(engineering.populate_title_block)
-    mcp.add_tool(engineering.assemble_engineering_drawing)
+    add(engineering.populate_title_block, SETS)
+    add(engineering.assemble_engineering_drawing, SETS)
 
-    mcp.add_tool(data_merge.read_excel_data)
-    mcp.add_tool(data_merge.merge_record)
-    mcp.add_tool(data_merge.batch_merge)
-    mcp.add_tool(data_merge.generate_barcode)
-    mcp.add_tool(data_merge.generate_qrcode)
-
+    add(data_merge.read_excel_data, READ)
+    add(data_merge.merge_record, SETS)
+    add(data_merge.batch_merge, SETS)
+    add(data_merge.generate_barcode, ADDS)
+    add(data_merge.generate_qrcode, ADDS)
 
 def main():
-    setup_logging()
-    logger.info("启动 CorelDRAW Signage MCP Server...")
-
-    if init_connection():
-        logger.info("CorelDRAW 连接成功")
-    else:
-        logger.warning("CorelDRAW 连接失败，服务器将启动但功能受限")
-
+    parser = argparse.ArgumentParser(description="CorelDRAW MCP bridge")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--stdio", action="store_true", help="Read/write MCP on stdin/stdout")
+    mode.add_argument("--local-http", action="store_true", help="Use the workstation endpoint at 127.0.0.1:8765")
+    parser.add_argument("--check", action="store_true", help="Validate the interpreter and tool registration, then exit")
+    args = parser.parse_args()
+    load_dotenv(_ROOT / ".env")
     register_tools()
-    logger.info("工具注册完成")
-
-    if _MCP_TRANSPORT != "stdio":
-        logger.info(f"HTTP 模式启动，监听 http://{_MCP_HOST}:{_MCP_PORT}/mcp")
-        logger.info("本地 Claude/OpenCode 可通过 .mcp.json 中的 url 连接")
-
+    if sys.platform != "win32" or struct.calcsize("P") != 8:
+        raise RuntimeError("Run the CorelDRAW server with 64-bit Python on Windows")
+    transport = os.environ.get("MCP_TRANSPORT", "stdio")
+    if args.stdio:
+        transport = "stdio"
+    elif args.local_http:
+        transport = "streamable-http"
+    setup_logging(http=transport != "stdio")
+    host = "127.0.0.1" if args.local_http else os.environ.get("MCP_HOST", "127.0.0.1")
+    port = 8765 if args.local_http else int(os.environ.get("MCP_PORT", "8765"))
     try:
-        if _MCP_TRANSPORT != "stdio":
-            mcp.run(transport=_MCP_TRANSPORT, host=_MCP_HOST, port=_MCP_PORT)
+        if transport == "stdio":
+            if not args.check:
+                mcp.run(transport="stdio", show_banner=False)
+        elif transport in {"http", "streamable-http"}:
+            if host not in {"127.0.0.1", "::1", "localhost"}:
+                raise ValueError("The CorelDRAW HTTP server requires a loopback host")
+            if args.check:
+                mcp.http_app(transport="streamable-http", **_HTTP_OPTIONS)
+                return
+            logger.info("CorelDRAW MCP listening on {}:{} (PID {})", host, port, os.getpid())
+            # No MCP session state to invalidate on a process restart. Corel itself is still shared.
+            mcp.run(transport="streamable-http", host=host, port=port, show_banner=False, **_HTTP_OPTIONS)
         else:
-            mcp.run(transport=_MCP_TRANSPORT)
+            raise ValueError("MCP_TRANSPORT must be stdio or streamable-http")
     finally:
         close_connection()
-        logger.info("MCP Server 已关闭")
+        logger.info("CorelDRAW MCP stopped")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        logger.exception("CorelDRAW MCP startup or runtime failure")
+        raise

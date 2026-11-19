@@ -28,21 +28,21 @@ SYSTEM_PROMPT = """你是一个自动化设计 Agent，能够通过工具调用�
 
 1. **读取数据**：调用 read_excel_data 获取所有记录
 2. **逐条处理**：对每条记录执行：
-   a. open_template(模板路径) — 打开 CDR 模板
-   b. find_shape_by_name("placeholder_xxx") — 找到占位符，获取 shape_id
-   c. set_text_content(shape_id, 文字内容) — 替换文字
+   a. open_document(模板路径) — 打开 CDR 模板（返回 document_path，后续所有工具都传入它）
+   b. find_shapes(document_path, filters={"name": "placeholder_xxx"}) — 找到占位符，获取 shape_id（结果 shapes[0].id）
+   c. edit_text(document_path, page_index, [shape_id], content=文字内容) — 替换文字（保留原有填充和字体）
    d. 对每个占位符重复 b-c
-   e. check_text_overflow — 检查文字是否溢出
+   e. inspect_text(document_path, page_index, include=["frame", "fonts"]) — 检查文字是否溢出、字体是否缺失
    f. ★视觉检查★：调用 export_preview_png → 查看返回的图片
       - 文字是否完整？（无截断）
       - 整体比例是否合理？
       - 关键信息是否清晰？
       - 色块边界是否正确？
-      - 如有问题：调用 fit_text_to_frame 或调整字号 → 重新预览
+      - 如有问题：调用 edit_text(fit_to_frame=True) 或调整字号（edit_text size=）→ 重新预览
       - 确认 OK 后继续下一步
-   g. 印前处理：convert_text_to_curves、check_rgb_colors
+   g. 印前处理：convert_to_curves（find_shapes 找到文字 ID）、get_ink_inventory（RGB/工艺色来源与预期印版）
    h. 导出 PDF：export_pdf(路径, color_profile="ISO_Coated_v2", bleed=3, crop_marks=True)
-   i. 导出 DXF：先 assign_to_layer 整理图层，再 export_dxf(路径)
+   i. 导出 DXF：先 move_shapes_to_layer 整理图层，再 export_dxf(路径)
 3. **汇报结果**：成功数、失败数、调整项
 
 ## CorelDRAW 坐标系（必读，否则图形上下颠倒）
@@ -64,7 +64,7 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 - 放底部：y = **10**
 - 放中间：y = (200 - 30) / 2 = **85**
 
-绘制前必须先调用 `get_document_info` 获取 page_width 和 page_height，否则无法正确计算坐标。
+绘制前必须先调用 `list_documents` 获取页面宽高（width/height，单位见 unit），否则无法正确计算坐标。
 
 ## 命名规范
 
@@ -75,7 +75,7 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 
 ## 印前/生产规范
 
-- 所有文字导出前必须 convert_text_to_curves（转曲），防止字体依赖
+- 所有文字导出前必须 convert_to_curves（转曲），防止字体依赖
 - PDF 必须用 CMYK 颜色模式（检查并转换所有 RGB 颜色）
 - PDF 必须包含出血（通常 3mm）和裁切线
 - DXF 图层按激光机要求分组（不同颜色=不同切割参数）
@@ -83,9 +83,9 @@ CorelDRAW 使用**数学坐标系**，与屏幕坐标系相反：
 
 ## 错误处理
 
-- 如果 find_shape_by_name 返回 {"found": false}：检查占位符名称是否正确，或换一种命名方式重试
-- 如果文字溢出：先尝试 fit_text_to_frame，不成功则缩小字号
-- 如果颜色检查发现 RGB：用 set_fill_cmyk 转为 CMYK
+- 如果 find_shapes 返回 count 0：检查占位符名称是否正确，或用通配符（如 "placeholder_*"）重试
+- 如果文字溢出：先尝试 edit_text(fit_to_frame=True)，不成功则用 edit_text(size=…) 缩小字号
+- 如果颜色检查发现 RGB：用 set_fill(color="CMYK c/m/y/k") 或 replace_color 转为 CMYK
 - 如果某条记录处理失败：记录错误原因，继续处理下一条，不要中断整个批次
 - COM 连接失败时工具会返回错误信息，重试后仍失败则跳过该操作
 
