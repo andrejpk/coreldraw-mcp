@@ -192,17 +192,40 @@ def register_tools():
     add(data_merge.generate_barcode, ADDS)
     add(data_merge.generate_qrcode, ADDS)
 
+def _require_ghostscript():
+    """Exit 1 unless Ghostscript is found as render_plates finds it and `--version` runs.
+
+    Reports on stderr only: stdout is the MCP channel under --stdio.
+    """
+    import subprocess
+
+    from core.separations import find_ghostscript
+
+    try:
+        executable = find_ghostscript()
+        version = subprocess.run([str(executable), "--version"], capture_output=True, text=True, timeout=20,
+                                 check=True).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"Ghostscript: {exc}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Ghostscript: {version} at {executable}", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser(description="CorelDRAW MCP bridge")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--stdio", action="store_true", help="Read/write MCP on stdin/stdout")
     mode.add_argument("--local-http", action="store_true", help="Use the workstation endpoint at 127.0.0.1:8765")
     parser.add_argument("--check", action="store_true", help="Validate the interpreter and tool registration, then exit")
+    parser.add_argument("--require-ghostscript", action="store_true",
+                        help="Fail at startup unless Ghostscript (render_plates) is found and runs")
     args = parser.parse_args()
     load_dotenv(_ROOT / ".env")
     register_tools()
     if sys.platform != "win32" or struct.calcsize("P") != 8:
         raise RuntimeError("Run the CorelDRAW server with 64-bit Python on Windows")
+    if args.require_ghostscript:
+        _require_ghostscript()
     transport = os.environ.get("MCP_TRANSPORT", "stdio")
     if args.stdio:
         transport = "stdio"
