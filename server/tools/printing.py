@@ -145,6 +145,33 @@ def plan_page(page_inventory: dict, plate_state: dict, separations: bool, print_
     return {"page_index": page, "plates": output, "warnings": warnings}
 
 
+def check_plates(plates, plan: list[dict], plate_state: dict) -> list[str]:
+    """The plates to print out of ``plan`` (plan_page results), in the plan's order. Refuses names no page outputs,
+    and plates CorelDRAW cannot switch: every plate the pages output must be in the print settings' plate list, or
+    printing a subset could still output the others."""
+    if (not isinstance(plates, list) or not plates
+            or not all(isinstance(plate, str) and plate.strip() for plate in plates)):
+        raise ValueError("plates must be a non-empty list of plate (ink) names from the dry run")
+    if len(set(plates)) != len(plates):
+        raise ValueError("plates must not repeat a name")
+    manifest = []
+    for page in plan:
+        manifest += [plate for plate in page["plates"] if plate not in manifest]
+    unknown = [plate for plate in plates if plate not in manifest]
+    if unknown:
+        raise ValueError(f"Not plates these pages output: {unknown}. The dry run's plates are {manifest}")
+    unswitchable = [plate for plate in manifest if plate not in plate_state]
+    if unswitchable:
+        raise ValueError(f"These plates are not in the print settings' plate list, so a subset cannot be printed "
+                         f"safely: {unswitchable}")
+    return [plate for plate in manifest if plate in plates]
+
+
+def only_plates(plan: list[dict], plates: list[str]) -> list[dict]:
+    """The plan limited to ``plates``: what a call with them outputs per page."""
+    return [{**page, "plates": [plate for plate in page["plates"] if plate in plates]} for page in plan]
+
+
 # --- COM -------------------------------------------------------------------------------------------------------------
 
 def _installed_printers() -> list[str]:
@@ -156,6 +183,19 @@ def _installed_printers() -> list[str]:
 def _plate_state(settings) -> dict:
     plates = settings.Separations.Plates
     return {str(plate.Color): bool(plate.Enabled) for plate in (plates.Item(i) for i in range(1, plates.Count + 1))}
+
+
+def _plate_items(settings) -> list:
+    plates = settings.Separations.Plates
+    return [plates.Item(i) for i in range(1, plates.Count + 1)]
+
+
+def _set_plates(settings, enabled: dict) -> None:
+    """Switch plates on or off by name ({name: enabled}); plates not named keep their state."""
+    for plate in _plate_items(settings):
+        name = str(plate.Color)
+        if name in enabled and bool(plate.Enabled) != enabled[name]:
+            plate.Enabled = enabled[name]
 
 
 def _snapshot(settings) -> dict:
@@ -196,6 +236,7 @@ def print_document(
     dry_run: bool = True,
     submission_key: str = "",
     print_to_file: str = "",
+    plates: list[str] | None = None,
 ) -> ToolResult:
     """Print pages of an open, saved document with CorelDRAW's own print, using the document's existing print
     settings (the shop's established ones). Changes only printer, page range, copies and the separations flag,
@@ -215,6 +256,10 @@ def print_document(
       first, then use a new key to print again). Returns the submission time and ledger record.
     - print_to_file: optional absolute path; the output goes to that file instead of the printer (also avoids a
       file dialog).
+    - plates: optional, with separations true: print only these plates (ink names from the dry run's plates), for
+      example ["PANTONE 186 C"] to print one film. Names the pages do not output are refused. Only the named plates
+      are switched on for the call and every plate's on/off state is restored afterwards. A dry run with plates
+      returns the plan for just those plates; the ledger record names them.
     """
     if not isinstance(copies, int) or isinstance(copies, bool) or not 1 <= copies <= 99:
         return ToolResult.fail("copies must be a whole number between 1 and 99")
@@ -224,6 +269,8 @@ def print_document(
         return ToolResult.fail("submission_key is required when dry_run is false (a unique string per job)")
     if print_to_file and not (os.path.isabs(print_to_file) and os.path.isdir(os.path.dirname(print_to_file))):
         return ToolResult.fail("print_to_file must be an absolute path in an existing folder")
+    if plates is not None and not separations:
+        return ToolResult.fail("plates needs separations true: a composite has no plates to choose")
     conn = get_connection()
 
     def run():
@@ -235,7 +282,7 @@ def print_document(
             return _dry_run(conn, doc, actual_path, settings, wanted)
         return _submit(conn, doc, actual_path, settings, wanted)
 
-    def _dry_run(conn, doc, actual_path, settings, wanted):
+    def _plan(conn, doc, settings, wanted):
         from core.targets import resolve_page
         from core.units import unit_name
         from tools.inks import _page_inventory
@@ -245,6 +292,13 @@ def print_document(
         unit = unit_name(doc.Unit)
         plan = [plan_page(_page_inventory(conn, doc, resolve_page(doc, page), page, unit, False, 0, True), state,
                           separations, empty) for page in wanted]
+        chosen = None if plates is None else check_plates(plates, plan, state)
+        return state, empty, plan, chosen
+
+    def _dry_run(conn, doc, actual_path, settings, wanted):
+        state, empty, plan, chosen = _plan(conn, doc, settings, wanted)
+        if chosen is not None:
+            plan = only_plates(plan, chosen)
         warnings = []
         if settings.Printer.Name != printer:
             warnings.append({"code": "printer_differs", "message": (
@@ -255,7 +309,7 @@ def print_document(
                              "submission is refused until it is saved"})
         return {"document_path": actual_path, "dry_run": True, "printed": False, "printer": printer,
                 "pages": wanted, "page_range": page_range_text(wanted), "copies": copies,
-                "separations": separations, "print_to_file": print_to_file or None,
+                "separations": separations, "print_to_file": print_to_file or None, "plates": chosen,
                 "document_settings": {"printer": settings.Printer.Name, "print_empty_plates": empty,
                                       "disabled_plates": sorted(p for p, on in state.items() if not on)},
                 "plan": plan, "warnings": warnings}
@@ -263,12 +317,15 @@ def print_document(
     def _submit(conn, doc, actual_path, settings, wanted):
         if bool(doc.Dirty):
             raise ValueError("The document has unsaved changes; save it first so the print matches the file")
+        state, chosen = None, None
+        if plates is not None:
+            state, _, _, chosen = _plan(conn, doc, settings, wanted)
         original = _snapshot(settings)
         wanted_values = {"printer": printer, "print_range": _PRN_PAGE_RANGE, "page_range": page_range_text(wanted),
                          "copies": copies, "separations": separations,
                          "print_to_file": bool(print_to_file), "file_name": print_to_file or None}
         record = {"document_path": actual_path, "pages": wanted, "printer": printer, "separations": separations,
-                  "copies": copies, "print_to_file": print_to_file or None, "status": "submitting",
+                  "copies": copies, "print_to_file": print_to_file or None, "plates": chosen, "status": "submitting",
                   "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
         previous = reserve_submission(submission_key, record)
         if previous is not None:
@@ -282,6 +339,11 @@ def print_document(
                 if str(applied[field]) != str(wanted_values[field]):
                     raise RuntimeError(f"CorelDRAW did not accept {field}: wanted {wanted_values[field]!r}, "
                                        f"got {applied[field]!r}")
+            if chosen is not None:
+                wanted_plates = {name: name in chosen for name in state}
+                _set_plates(settings, wanted_plates)
+                if _plate_state(settings) != wanted_plates:
+                    raise RuntimeError(f"CorelDRAW did not switch the plates to {chosen}")
             started = True
             settings.PrintOut()
             record = update_submission(submission_key, {"status": "submitted"})
@@ -294,7 +356,9 @@ def print_document(
         finally:
             try:
                 _apply(settings, original)
-                if _snapshot(settings) != original:
+                if state is not None:
+                    _set_plates(settings, state)
+                if _snapshot(settings) != original or (state is not None and _plate_state(settings) != state):
                     restore_error = "print settings were not fully restored"
             except Exception as exc:
                 restore_error = f"print settings were not restored: {exc}"

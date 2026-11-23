@@ -1,8 +1,11 @@
 """Pure-logic checks for print_document and nearest_spot_colors (no CorelDRAW needed)."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from tools import printing, spots
 
@@ -80,6 +83,127 @@ class PrintPlanTests(unittest.TestCase):
         plan = printing.plan_page(self.inventory(["A"]), {}, False, False)
         self.assertEqual(len(plan["plates"]), 1)
         self.assertIn("Composite", plan["plates"][0])
+
+
+class PlateChoiceTests(unittest.TestCase):
+    PLAN = [{"page_index": 1, "plates": ["White", "PANTONE 186 C", "Black"], "warnings": []}]
+    STATE = {"White": True, "PANTONE 186 C": True, "Black": True, "Cyan": False}
+
+    def test_keeps_the_manifest_order(self):
+        self.assertEqual(printing.check_plates(["Black", "White"], self.PLAN, self.STATE), ["White", "Black"])
+        only = printing.only_plates(self.PLAN, ["PANTONE 186 C"])
+        self.assertEqual(only[0]["plates"], ["PANTONE 186 C"])
+
+    def test_refuses_names_the_pages_do_not_output(self):
+        for bad in ([], ["Cyan"], ["White", "White"], [""], "White", [1]):
+            with self.assertRaises(ValueError):
+                printing.check_plates(bad, self.PLAN, self.STATE)
+
+    def test_refuses_a_subset_when_a_plate_cannot_be_switched(self):
+        with self.assertRaisesRegex(ValueError, "not in the print settings"):
+            printing.check_plates(["White"], self.PLAN, {"White": True, "PANTONE 186 C": True})
+
+
+class FakePlate:
+    def __init__(self, color, enabled):
+        self.Color, self.Enabled = color, enabled
+
+
+class FakePlates:
+    def __init__(self, plates):
+        self.plates = plates
+        self.Count = len(plates)
+
+    def Item(self, index):
+        return self.plates[index - 1]
+
+
+class FakeSettings:
+    """CorelDRAW's PrintSettings, enough for print_document."""
+
+    def __init__(self, plates):
+        self.Printer = SimpleNamespace(Name="Office")
+        self.PrintRange, self.PageRange, self.Copies, self.PrintToFile, self.FileName = 0, "", 1, False, ""
+        self.Separations = SimpleNamespace(Enabled=False, EmptyPlates=False, Plates=FakePlates(plates))
+        self.printed = []
+
+    def SelectPrinter(self, name):
+        self.Printer.Name = name
+
+    def PrintOut(self):
+        self.printed.append({str(p.Color): p.Enabled for p in self.Separations.Plates.plates})
+
+
+class PlateSubmissionTests(unittest.TestCase):
+    """print_document with plates against a fake COM document (no CorelDRAW needed)."""
+
+    def setUp(self):
+        folder = tempfile.mkdtemp()
+        self.settings = FakeSettings([FakePlate("White", True), FakePlate("PANTONE 186 C", True),
+                                      FakePlate("Black", True), FakePlate("Cyan", False)])
+        doc = SimpleNamespace(Pages=SimpleNamespace(Count=2), PrintSettings=self.settings, Dirty=False, Unit=0)
+
+        def safe_call(fn):  # as the bridge does: an exception becomes a failed call
+            try:
+                return {"success": True, "result": fn()}
+            except Exception as exc:
+                return {"success": False, "error": str(exc)}
+
+        conn = SimpleNamespace(app=None, safe_call=safe_call)
+        inventory = {"page_index": 1, "plates": {"print": ["White", "PANTONE 186 C", "Black"],
+                                                 "registration_only": [], "blank_spot_plates": []}}
+        for target, value in ((printing, ("get_connection", lambda: conn)),
+                              (printing, ("_installed_printers", lambda: ["RIP"])),
+                              (printing, ("resolve_document", lambda app, path, activate: (doc, "C:/x.cdr")))):
+            patcher = patch.object(target, value[0], value[1])
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (("tools.inks._page_inventory", lambda *args: inventory),
+                            ("core.targets.resolve_page", lambda doc, page: page),
+                            ("core.units.unit_name", lambda code: "mm")):
+            patcher = patch(name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        env = patch.dict(os.environ, {"CORELDRAW_MCP_STATE_DIR": folder})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def state(self):
+        return {str(p.Color): p.Enabled for p in self.settings.Separations.Plates.plates}
+
+    def test_dry_run_plans_only_the_named_plates(self):
+        result = printing.print_document("x.cdr", "RIP", [1], True, plates=["PANTONE 186 C"])
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(result.data["plates"], ["PANTONE 186 C"])
+        self.assertEqual(result.data["plan"][0]["plates"], ["PANTONE 186 C"])
+        self.assertEqual(self.settings.printed, [])
+
+    def test_prints_one_plate_and_restores_every_plate(self):
+        before = self.state()
+        result = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-186",
+                                         plates=["PANTONE 186 C"])
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(self.settings.printed, [{"White": False, "PANTONE 186 C": True, "Black": False,
+                                                   "Cyan": False}])
+        self.assertEqual(self.state(), before)
+        self.assertNotIn("warning", result.data)
+        self.assertEqual(result.data["ledger_record"]["plates"], ["PANTONE 186 C"])
+        again = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-186",
+                                        plates=["PANTONE 186 C"])
+        self.assertFalse(again.success)
+        self.assertEqual(len(self.settings.printed), 1)
+
+    def test_refuses_an_unknown_plate_without_printing_or_reserving(self):
+        result = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="k",
+                                         plates=["Cyan"])
+        self.assertFalse(result.success)
+        self.assertEqual(self.settings.printed, [])
+        retry = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="k",
+                                        plates=["White"])
+        self.assertTrue(retry.success, retry.error)
+
+    def test_plates_need_separations(self):
+        self.assertFalse(printing.print_document("x.cdr", "RIP", [1], False, plates=["White"]).success)
 
 
 class LedgerTests(unittest.TestCase):
