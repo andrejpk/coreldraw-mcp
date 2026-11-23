@@ -114,10 +114,12 @@ def register_tools():
         layers,
         plates,
         preflight,
+        printing,
         proof,
         recolor,
         shapes,
         silhouette,
+        spots,
         templates,
         text,
     )
@@ -151,6 +153,8 @@ def register_tools():
     add(proof.simulate_overprints, ADDS_SAME)
     add(proof.get_print_separation_settings, READ)
     add(proof.export_page_proof_pdf, ADDS)
+    add(printing.print_document, ADDS)
+    add(spots.nearest_spot_colors, READ)
     add(plates.render_plates, ADDS)
 
     add(text.inspect_text, READ)
