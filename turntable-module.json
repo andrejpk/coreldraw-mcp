@@ -2,7 +2,7 @@
   "type": "mcp-server",
   "version": "0.1.0",
   "title": "CorelDRAW",
-  "description": "CorelDRAW automation over MCP (stdio). Needs CorelDRAW running in the runner's desktop session and Ghostscript installed (from ghostscript.com or winget; found as render_plates finds it and checked, never installed); the runner provides Python 3.12 and requirements.lock's packages.",
+  "description": "CorelDRAW automation over MCP (stdio). Needs CorelDRAW running in the runner's desktop session and Ghostscript 10 or later installed (from ghostscript.com or winget; the module only names it: the runner finds it by its own rules and checks it, never installs it); the runner provides Python 3.12 and requirements.lock's packages.",
   "manifest": {
     "mcpServers": {
       "corel": {
@@ -21,22 +21,7 @@
         "spec": { "manager": "pip", "lockFile": "requirements.lock" }
       }
     },
-    {
-      "inline": {
-        "type": "system-package",
-        "name": "ghostscript",
-        "spec": {
-          "manager": "detect",
-          "detect": {
-            "env": "GHOSTSCRIPT_EXE",
-            "commands": ["gswin64c", "gs"],
-            "paths": ["${ProgramFiles}/gs/gs*/bin/gswin64c.exe"],
-            "versionArgs": ["--version"]
-          },
-          "packages": { "winget": "ArtifexSoftware.GhostScript" }
-        }
-      }
-    }
+    { "inline": { "type": "system-package", "name": "ghostscript", "version": ">=10" } }
   ],
   "requires": ["corel", "os:windows"]
 }
