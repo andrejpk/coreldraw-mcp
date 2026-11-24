@@ -76,9 +76,10 @@ def render_tiffsep(pdf: Path, work: Path, ghostscript: Path, dpi: int):
     return composite, plates
 
 
-def save_plate(ink: np.ndarray, path: Path) -> None:
-    """Save a plate as a film: black where ink is."""
-    Image.fromarray(255 - ink).save(path, compress_level=1)
+def save_plate(ink: np.ndarray, path: Path, dpi: int | None = None) -> None:
+    """Save a plate as a film: black where ink is. With dpi, the PNG records its resolution (pHYs), so whatever
+    reads or prints it knows its real size."""
+    Image.fromarray(255 - ink).save(path, compress_level=1, **({"dpi": (dpi, dpi)} if dpi else {}))
 
 
 def bbox(mask: np.ndarray):

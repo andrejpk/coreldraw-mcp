@@ -239,7 +239,7 @@ def _analyze(page_data, unit, dpi, composite, rendered, folder, layer_name, incl
                          "message": f"Rendered width {width_px} px, page width at {dpi} dpi {expected_w:.0f} px: "
                                     "bounding boxes are scaled to the page"})
     composite_path = folder / "composite.png"
-    composite.save(composite_path, compress_level=1)
+    composite.save(composite_path, compress_level=1, dpi=(dpi, dpi))
 
     objects = page_data["objects"]
     predicted, registration_objects = _prediction(objects, layer_name, include_hidden_printable)
@@ -265,7 +265,7 @@ def _analyze(page_data, unit, dpi, composite, rendered, folder, layer_name, incl
         art = mask & ~registration
         art_masks[name] = art
         png = folder / f"plate-{index:02d}-{_safe_file(name)}.png"
-        seps.save_plate(ink, png)
+        seps.save_plate(ink, png, dpi)
         inked = int(mask.sum())
         art_pixels = int(art.sum())
         plate = {"plate": name, "kind": "process" if name in PROCESS_PLATES else "spot", "non_blank": inked > 0,
