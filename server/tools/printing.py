@@ -219,6 +219,22 @@ def _apply(settings, values: dict) -> None:
         settings.FileName = values["file_name"]
 
 
+def _restore_clean(doc) -> str | None:
+    """Clear the unsaved-changes flag after a print whose settings were all restored.
+
+    Changing the print settings (printer, range, plates) and setting them back marks the document changed, although
+    it matches the saved file again; left set, the next print of the same document is refused. Called only when the
+    document was saved before the print and every setting was restored. Returns a warning, or None."""
+    try:
+        if bool(doc.Dirty):
+            doc.Dirty = False
+        if bool(doc.Dirty):
+            return "the document stays marked as changed after the print"
+    except Exception as exc:
+        return f"the unsaved-changes flag was not restored: {exc}"
+    return None
+
+
 def _check_printer(printer: str) -> None:
     if not isinstance(printer, str) or not printer:
         raise ValueError("printer must be an exact printer name")
@@ -362,6 +378,8 @@ def print_document(
                     restore_error = "print settings were not fully restored"
             except Exception as exc:
                 restore_error = f"print settings were not restored: {exc}"
+            if restore_error is None:
+                restore_error = _restore_clean(doc)
         result = {"document_path": actual_path, "dry_run": False, "printed": True, "submission_key": submission_key,
                   "submitted_at": record["time"], "ledger_record": record, "ledger_file": str(ledger_path()),
                   "restored_settings": original}

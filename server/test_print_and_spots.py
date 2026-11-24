@@ -104,7 +104,18 @@ class PlateChoiceTests(unittest.TestCase):
             printing.check_plates(["White"], self.PLAN, {"White": True, "PANTONE 186 C": True})
 
 
-class FakePlate:
+class Marks:
+    """CorelDRAW marks a document changed when its print settings or plate switches are set, even back again."""
+
+    owner = None
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if Marks.owner is not None and name[:1].isupper():
+            Marks.owner.Dirty = True
+
+
+class FakePlate(Marks):
     def __init__(self, color, enabled):
         self.Color, self.Enabled = color, enabled
 
@@ -118,7 +129,7 @@ class FakePlates:
         return self.plates[index - 1]
 
 
-class FakeSettings:
+class FakeSettings(Marks):
     """CorelDRAW's PrintSettings, enough for print_document."""
 
     def __init__(self, plates):
@@ -129,6 +140,7 @@ class FakeSettings:
 
     def SelectPrinter(self, name):
         self.Printer.Name = name
+        self.Copies = self.Copies  # marks the document changed, as CorelDRAW does
 
     def PrintOut(self):
         self.printed.append({str(p.Color): p.Enabled for p in self.Separations.Plates.plates})
@@ -142,6 +154,9 @@ class PlateSubmissionTests(unittest.TestCase):
         self.settings = FakeSettings([FakePlate("White", True), FakePlate("PANTONE 186 C", True),
                                       FakePlate("Black", True), FakePlate("Cyan", False)])
         doc = SimpleNamespace(Pages=SimpleNamespace(Count=2), PrintSettings=self.settings, Dirty=False, Unit=0)
+        self.doc = doc
+        Marks.owner = doc
+        self.addCleanup(setattr, Marks, "owner", None)
 
         def safe_call(fn):  # as the bridge does: an exception becomes a failed call
             try:
@@ -192,6 +207,35 @@ class PlateSubmissionTests(unittest.TestCase):
                                         plates=["PANTONE 186 C"])
         self.assertFalse(again.success)
         self.assertEqual(len(self.settings.printed), 1)
+
+    def test_a_print_leaves_the_document_as_saved_so_the_next_plate_prints(self):
+        first = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-f1-white",
+                                        plates=["White"])
+        self.assertTrue(first.success, first.error)
+        self.assertFalse(self.doc.Dirty)
+        self.assertNotIn("warning", first.data)
+        second = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-f2-186",
+                                         plates=["PANTONE 186 C"])
+        self.assertTrue(second.success, second.error)
+        self.assertEqual(len(self.settings.printed), 2)
+        self.assertFalse(self.doc.Dirty)
+
+    def test_a_document_whose_settings_were_not_restored_stays_marked_changed(self):
+        def fail_to_restore(name):
+            if name != "RIP":
+                raise RuntimeError("printer not available")
+            self.settings.Printer.Name = name
+
+        object.__setattr__(self.settings, "SelectPrinter", fail_to_restore)  # not a print setting
+        result = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-f1-white",
+                                         plates=["White"])
+        self.assertTrue(result.success, result.error)
+        self.assertIn("not restored", result.data["warning"])
+        self.assertTrue(self.doc.Dirty)
+        refused = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="t-e-p1-f2-186",
+                                          plates=["PANTONE 186 C"])
+        self.assertFalse(refused.success)
+        self.assertIn("unsaved changes", refused.error)
 
     def test_refuses_an_unknown_plate_without_printing_or_reserving(self):
         result = printing.print_document("x.cdr", "RIP", [1], True, dry_run=False, submission_key="k",

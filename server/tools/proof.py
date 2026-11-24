@@ -6,7 +6,7 @@ from tempfile import TemporaryDirectory
 from core.connection import get_connection
 from core.models import ToolResult
 from core.results import failure, respond
-from core.targets import resolve_document, resolve_page
+from core.targets import activate_document, is_active, resolve_document, resolve_page
 
 _PDF_PAGE_RANGE = 3
 _PDF_NATIVE_COLOR = 3
@@ -147,10 +147,13 @@ def publish_proof(app, document_path, page_index, destination, layer_name=None, 
 
     Layer printability and visibility are changed only while publishing (layer proof, or hidden-but-printable
     layers made visible). Afterwards every changed flag, the dirty flag, the active page and the unit are
-    verified; PDF settings are restored by _publish_page. Raises on any failure, after restoring.
+    verified, and the document that was active is active again; PDF settings are restored by _publish_page.
+    Raises on any failure, after restoring. Selection, print settings and artwork are never touched.
     """
     changes_flags = layer_name is not None or include_hidden_printable
-    # Layer flags change while publishing, so the document is activated like any edit.
+    # Layer flags change while publishing, so the document is activated like any edit; the document that was
+    # active before is made active again afterwards.
+    previous = app.ActiveDocument if changes_flags else None
     doc, actual_path = resolve_document(app, document_path, activate=changes_flags)
     page = resolve_page(doc, page_index)
     layers = list(page.AllLayers)
@@ -201,6 +204,8 @@ def publish_proof(app, document_path, page_index, destination, layer_name=None, 
             raise RuntimeError(f"Failed to restore layer flags: {', '.join(failed)}")
         if (doc.Dirty, doc.ActivePage.Index, doc.Unit) != state:
             raise RuntimeError("The unsaved-changes flag, active page, or document unit changed")
+        if previous is not None and not is_active(app, previous):
+            activate_document(app, previous)
     return {"document_path": actual_path, "page_index": page_index, "layer_name": layer_name, **info,
             "output_path": str(destination), "bytes": size, "proof_source": "CorelDRAW Publish to PDF"}
 
